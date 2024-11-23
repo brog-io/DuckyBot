@@ -23,7 +23,7 @@ class MessageLinkButton(Button):
 
 
 class RefreshButton(Button):
-    # Class variable to store last usage per user
+    # Class variable to store last usage per user.
     _cooldowns = {}
     COOLDOWN_DURATION = 30  # Cooldown in seconds
 
