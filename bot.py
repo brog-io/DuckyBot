@@ -9,6 +9,7 @@ import os
 import logging
 import re
 from typing import Optional
+from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(
@@ -17,43 +18,80 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class RateLimiter:
+    def __init__(self, rate: int, per: float):
+        self.rate = rate
+        self.per = per
+        self.tokens = defaultdict(lambda: self.rate)
+        self.last_update = defaultdict(float)
+
+    def check(self, key: str) -> tuple[bool, float]:
+        now = time.time()
+        last_update = self.last_update[key]
+        time_passed = now - last_update
+
+        # Add tokens based on time passed
+        self.tokens[key] = min(
+            self.rate, self.tokens[key] + (time_passed * self.rate / self.per)
+        )
+        self.last_update[key] = now
+
+        if self.tokens[key] >= 1:
+            self.tokens[key] -= 1
+            return True, 0
+
+        # Return time until next token
+        return False, (1 - self.tokens[key]) * (self.per / self.rate)
+
+
 class MessageLinkButton(Button):
     def __init__(self, url: str):
         super().__init__(label="Go to Message", url=url, style=discord.ButtonStyle.link)
 
 
-class RefreshButton(Button):
-    # Class variable to store last usage per user.
-    _cooldowns = {}
-    COOLDOWN_DURATION = 30  # Cooldown in seconds
+class PersistentView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    def __init__(self, bot):
-        super().__init__(label="Refresh Count", style=discord.ButtonStyle.primary)
-        self.bot = bot
+
+class RefreshButton(Button):
+    def __init__(self):
+        super().__init__(
+            label="Refresh Count",
+            style=discord.ButtonStyle.primary,
+            custom_id="refresh_count",
+        )
 
     async def callback(self, interaction: discord.Interaction):
-        # Check cooldown
-        current_time = time.time()
-        user_id = interaction.user.id
-        last_used = self._cooldowns.get(user_id, 0)
+        # Get bot instance from client
+        bot = interaction.client.bot
 
-        # If user is on cooldown
-        remaining = self.COOLDOWN_DURATION - (current_time - last_used)
-        if remaining > 0:
+        # Check rate limits
+        guild_id = str(interaction.guild_id)
+        user_id = str(interaction.user.id)
+
+        # Check guild rate limit
+        guild_allowed, guild_wait = bot.guild_limiter.check(guild_id)
+        if not guild_allowed:
             await interaction.response.send_message(
-                f"Please wait {int(remaining)} seconds before refreshing again.",
+                f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
                 ephemeral=True,
             )
             return
 
-        # Update cooldown
-        self._cooldowns[user_id] = current_time
+        # Check user rate limit
+        user_allowed, user_wait = bot.user_limiter.check(user_id)
+        if not user_allowed:
+            await interaction.response.send_message(
+                f"Please wait {user_wait:.1f} seconds before refreshing again.",
+                ephemeral=True,
+            )
+            return
 
-        # Defer the response immediately to prevent timeout
         await interaction.response.defer()
 
         try:
-            async with self.bot.http_session.get(
+            async with bot.http_session.get(
                 "https://api.ente.io/files/count"
             ) as response:
                 if response.status == 200:
@@ -67,11 +105,10 @@ class RefreshButton(Button):
                         timestamp=discord.utils.utcnow(),
                     )
 
-                    # Create new view with fresh button
-                    view = View()
-                    view.add_item(RefreshButton(self.bot))
+                    # Use the persistent view
+                    view = PersistentView()
+                    view.add_item(RefreshButton())
 
-                    # Use edit_original_message since we deferred
                     await interaction.edit_original_response(embed=embed, view=view)
                 else:
                     await interaction.followup.send(
@@ -79,6 +116,7 @@ class RefreshButton(Button):
                         ephemeral=True,
                     )
         except Exception as e:
+            logger.error(f"Error in refresh button: {e}")
             await interaction.followup.send(
                 "An error occurred while refreshing the count. Please try again later.",
                 ephemeral=True,
@@ -102,6 +140,7 @@ class EnteDiscordBot:
 
         # Discord client
         self.client = discord.Client(intents=intents)
+        self.client.bot = self  # Store bot instance in client for access from views
 
         # Command tree for slash commands
         self.tree = app_commands.CommandTree(self.client)
@@ -112,14 +151,20 @@ class EnteDiscordBot:
         # HTTP client for API requests
         self.http_session: Optional[aiohttp.ClientSession] = None
 
-        # Setup event handlers and commands
-        self.setup_event_handlers()
-        self.setup_commands()
+        # Initialize rate limiters
+        # Allow 1 refresh per 30 seconds per user
+        self.user_limiter = RateLimiter(rate=1, per=30)
+        # Allow 6 refreshes per minute per guild
+        self.guild_limiter = RateLimiter(rate=6, per=60)
 
         # Message link regex pattern
         self.message_link_pattern = re.compile(
             r"https?:\/\/(?:.*\.)?discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)"
         )
+
+        # Setup event handlers and commands
+        self.setup_event_handlers()
+        self.setup_commands()
 
     def load_config(self, config_path: str) -> dict:
         """
@@ -165,14 +210,32 @@ class EnteDiscordBot:
             raise
 
     def setup_commands(self):
-        """
-        Setup slash commands
-        """
+        """Setup slash commands"""
 
         @self.tree.command(
             name="files", description="Get the current number of files tracked by Ente"
         )
         async def files(interaction: discord.Interaction):
+            # Check rate limits
+            guild_id = str(interaction.guild_id)
+            user_id = str(interaction.user.id)
+
+            guild_allowed, guild_wait = self.guild_limiter.check(guild_id)
+            if not guild_allowed:
+                await interaction.response.send_message(
+                    f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
+                    ephemeral=True,
+                )
+                return
+
+            user_allowed, user_wait = self.user_limiter.check(user_id)
+            if not user_allowed:
+                await interaction.response.send_message(
+                    f"Please wait {user_wait:.1f} seconds before using this command again.",
+                    ephemeral=True,
+                )
+                return
+
             try:
                 async with self.http_session.get(
                     "https://api.ente.io/files/count"
@@ -188,9 +251,9 @@ class EnteDiscordBot:
                             timestamp=discord.utils.utcnow(),
                         )
 
-                        # Create view with refresh button
-                        view = View()
-                        view.add_item(RefreshButton(self))
+                        # Use persistent view
+                        view = PersistentView()
+                        view.add_item(RefreshButton())
 
                         await interaction.response.send_message(embed=embed, view=view)
                     else:
@@ -206,9 +269,7 @@ class EnteDiscordBot:
                 )
 
     def setup_event_handlers(self):
-        """
-        Setup Discord client event handlers
-        """
+        """Setup Discord client event handlers"""
 
         @self.client.event
         async def on_ready():
@@ -226,9 +287,7 @@ class EnteDiscordBot:
 
         @self.client.event
         async def on_message(message):
-            """
-            Handle message link detection and embed creation
-            """
+            """Handle message link detection and embed creation"""
             if message.author.bot:
                 return
 
@@ -251,7 +310,7 @@ class EnteDiscordBot:
                     embed = discord.Embed(
                         description=referenced_message.content,
                         timestamp=referenced_message.created_at,
-                        color=0xFFCD3F,  # Discord Blurple
+                        color=0xFFCD3F,
                     )
 
                     # Add author info
@@ -280,9 +339,7 @@ class EnteDiscordBot:
 
         @self.client.event
         async def on_member_update(before, after):
-            """
-            Handle nickname updates to remove flag emojis
-            """
+            """Handle nickname updates to remove flag emojis"""
             if before.display_name != after.display_name:
                 sanitized_name = self.remove_flags_from_name(after.display_name)
                 if sanitized_name != after.display_name:
@@ -298,9 +355,7 @@ class EnteDiscordBot:
 
         @self.client.event
         async def on_member_join(member):
-            """
-            Send a welcome message when a new member joins the server
-            """
+            """Send a welcome message when a new member joins the server"""
             welcome_channel_id = int(self.config.get("welcome_channel_id", 0))
             if welcome_channel_id:
                 channel = self.client.get_channel(welcome_channel_id)
@@ -332,9 +387,7 @@ class EnteDiscordBot:
         return flag_pattern.sub("", name).strip()
 
     async def start_file_count_monitoring(self):
-        """
-        Start the background task for monitoring file count
-        """
+        """Start the background task for monitoring file count"""
         # Create HTTP session
         self.http_session = aiohttp.ClientSession()
 
@@ -342,9 +395,7 @@ class EnteDiscordBot:
         self.client.loop.create_task(self.monitor_file_count())
 
     async def monitor_file_count(self):
-        """
-        Background task to periodically check Ente.io file count and update status
-        """
+        """Background task to periodically check Ente.io file count and update status"""
         await self.client.wait_until_ready()
 
         # Get channel
@@ -386,7 +437,6 @@ class EnteDiscordBot:
                         logger.error(
                             f"API request failed with status {response.status}"
                         )
-
             except Exception as e:
                 logger.error(f"Error in file count monitoring: {e}")
 
@@ -394,10 +444,11 @@ class EnteDiscordBot:
             await asyncio.sleep(update_interval)
 
     async def start(self):
-        """
-        Start the Discord bot
-        """
+        """Start the Discord bot"""
         try:
+            # Add persistent view before starting
+            self.client.add_view(PersistentView())
+
             # Login and sync commands before connecting
             await self.client.login(self.config["discord_token"])
             await self.tree.sync()
@@ -405,7 +456,6 @@ class EnteDiscordBot:
         except Exception as e:
             logger.error(f"Error starting bot: {e}")
         finally:
-            # Ensure HTTP session is closed
             if self.http_session:
                 await self.http_session.close()
 
