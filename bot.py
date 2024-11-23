@@ -23,22 +23,21 @@ class MessageLinkButton(Button):
 
 
 class RefreshButton(Button):
+    # Class variable to store last usage per user
     _cooldowns = {}
-    COOLDOWN_DURATION = 30
+    COOLDOWN_DURATION = 30  # Cooldown in seconds
 
     def __init__(self, bot):
-        super().__init__(
-            label="Refresh Count",
-            style=discord.ButtonStyle.primary,
-            custom_id="refresh_count",
-        )
+        super().__init__(label="Refresh Count", style=discord.ButtonStyle.primary)
         self.bot = bot
 
     async def callback(self, interaction: discord.Interaction):
+        # Check cooldown
         current_time = time.time()
         user_id = interaction.user.id
         last_used = self._cooldowns.get(user_id, 0)
 
+        # If user is on cooldown
         remaining = self.COOLDOWN_DURATION - (current_time - last_used)
         if remaining > 0:
             await interaction.response.send_message(
@@ -47,7 +46,10 @@ class RefreshButton(Button):
             )
             return
 
+        # Update cooldown
         self._cooldowns[user_id] = current_time
+
+        # Defer the response immediately to prevent timeout
         await interaction.response.defer()
 
         try:
@@ -65,9 +67,11 @@ class RefreshButton(Button):
                         timestamp=discord.utils.utcnow(),
                     )
 
-                    view = View(timeout=None)
+                    # Create new view with fresh button
+                    view = View()
                     view.add_item(RefreshButton(self.bot))
 
+                    # Use edit_original_message since we deferred
                     await interaction.edit_original_response(embed=embed, view=view)
                 else:
                     await interaction.followup.send(
@@ -79,13 +83,6 @@ class RefreshButton(Button):
                 "An error occurred while refreshing the count. Please try again later.",
                 ephemeral=True,
             )
-
-
-class PersistentView(View):
-    def __init__(self, bot):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.add_item(RefreshButton(bot))
 
 
 class EnteDiscordBot:
@@ -215,7 +212,6 @@ class EnteDiscordBot:
 
         @self.client.event
         async def on_ready():
-            self.client.add_view(PersistentView(self.client))
             logger.info(f"Logged in as {self.client.user}")
             # Set initial status
             activity = discord.Activity(
