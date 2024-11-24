@@ -52,8 +52,9 @@ class FileTracker(commands.Cog):
                     if current_count != self.last_count:
                         await channel.edit(name=f"📊 {current_count:,} Files")
                         activity = discord.Activity(
-                            type=discord.ActivityType.watching,
-                            name=f"{current_count:,} files",
+                            type=discord.ActivityType.custom,
+                            name=f"Securing {current_count:,} files",
+                            state=f"Securing {current_count:,} files",
                         )
                         await self.bot.change_presence(
                             status=discord.Status.online, activity=activity
@@ -67,7 +68,7 @@ class FileTracker(commands.Cog):
         await self.bot.wait_until_ready()
 
     @app_commands.command(
-        name="files", description="Get the current number of files tracked by Ente"
+        name="files", description="Get the current number of files protected by Ente"
     )
     async def files(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
@@ -102,7 +103,7 @@ class FileTracker(commands.Cog):
 
                     embed = discord.Embed(
                         title="Ente Files Count",
-                        description=f"Currently tracking **{current_count:,}** files",
+                        description=f"Currently protecting **{current_count:,}** files",
                         color=0xFFCD3F,
                         timestamp=discord.utils.utcnow(),
                     )
