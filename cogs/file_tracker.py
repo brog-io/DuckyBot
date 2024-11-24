@@ -78,30 +78,18 @@ class FileTracker(commands.Cog):
 
         guild_allowed, guild_wait = self.bot.guild_limiter.check(guild_id)
         if not guild_allowed:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
-                    ephemeral=True,
-                )
+            await interaction.response.send_message(
+                f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
+                ephemeral=True,
+            )
             return
 
         user_allowed, user_wait = self.bot.user_limiter.check(user_id)
         if not user_allowed:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"Please wait {user_wait:.1f} seconds before using this command again.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    f"Please wait {user_wait:.1f} seconds before using this command again.",
-                    ephemeral=True,
-                )
+            await interaction.response.send_message(
+                f"Please wait {user_wait:.1f} seconds before using this command again.",
+                ephemeral=True,
+            )
             return
 
         try:
@@ -122,30 +110,25 @@ class FileTracker(commands.Cog):
                     view = PersistentView()
                     view.add_item(RefreshButton())
 
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(embed=embed, view=view)
-                    else:
+                    if isinstance(interaction.message, discord.Message):
+                        # If this is a button interaction, edit the existing message
                         await interaction.message.edit(embed=embed, view=view)
-                else:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(
-                            "Failed to fetch the current file count. Please try again later.",
-                            ephemeral=True,
-                        )
+                        await interaction.response.defer()
                     else:
-                        await interaction.followup.send(
-                            "Failed to fetch the current file count. Please try again later.",
-                            ephemeral=True,
-                        )
+                        # If this is a slash command, send a new message
+                        await interaction.response.send_message(embed=embed, view=view)
+                else:
+                    await interaction.response.send_message(
+                        "Failed to fetch the current file count. Please try again later.",
+                        ephemeral=True,
+                    )
         except Exception as e:
             logger.error(f"Error fetching file count: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "An error occurred while fetching the count. Please try again later.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    "An error occurred while fetching the count. Please try again later.",
-                    ephemeral=True,
-                )
+            await interaction.response.send_message(
+                "An error occurred while fetching the count. Please try again later.",
+                ephemeral=True,
+            )
+
+
+async def setup(bot):
+    await bot.add_cog(FileTracker(bot))
