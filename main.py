@@ -8,6 +8,7 @@ import logging
 from cogs.file_tracker import FileTracker
 from cogs.message_links import MessageLinks
 from cogs.member_manager import MemberManager
+from cogs.log_file_warning import LogFileWarning
 from utils.rate_limiter import RateLimiter
 
 # Configure logging
@@ -48,10 +49,10 @@ class EnteBot(commands.Bot):
         self.http_session = aiohttp.ClientSession()
 
         # Load cogs
-        file_tracker = FileTracker(self)
-        await self.add_cog(file_tracker)
+        await self.add_cog(FileTracker(self))
         await self.add_cog(MessageLinks(self))
         await self.add_cog(MemberManager(self))
+        await self.add_cog(LogFileWarning(self))
 
         # Setup persistent view
         from cogs.file_tracker import PersistentView, RefreshButton
