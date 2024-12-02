@@ -23,7 +23,7 @@ class EnteBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="d!", intents=intents)
         self.config = self.load_config(config_path)
         self.http_session = None
         self.user_limiter = RateLimiter(rate=1, per=30)
