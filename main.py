@@ -3,12 +3,12 @@ from discord.ext import commands
 import asyncio
 import aiohttp
 import json
-import os
 import logging
 from cogs.file_tracker import FileTracker
 from cogs.message_links import MessageLinks
 from cogs.member_manager import MemberManager
 from cogs.log_file_warning import LogFileWarning
+from cogs.ente_status import EnteStatus
 from utils.rate_limiter import RateLimiter
 
 # Configure logging
@@ -30,11 +30,6 @@ class EnteBot(commands.Bot):
         self.guild_limiter = RateLimiter(rate=6, per=60)
 
     def load_config(self, config_path: str):
-        """
-        Load the configuration file.
-        :param config_path: Path to the JSON configuration file.
-        :return: Dictionary with the configuration data.
-        """
         try:
             with open(config_path, "r") as config_file:
                 return json.load(config_file)
@@ -53,6 +48,7 @@ class EnteBot(commands.Bot):
         await self.add_cog(MessageLinks(self))
         await self.add_cog(MemberManager(self))
         await self.add_cog(LogFileWarning(self))
+        await self.add_cog(EnteStatus(self))
 
         # Setup persistent view
         from cogs.file_tracker import PersistentView, RefreshButton
@@ -61,10 +57,19 @@ class EnteBot(commands.Bot):
         view.add_item(RefreshButton())
         self.add_view(view)  # This makes the button persistent across restarts
 
+        # Sync commands to a specific guild
+        await self.tree.sync(guild=discord.Object(id=948937918347608085))
+
     async def close(self):
         if self.http_session:
             await self.http_session.close()
         await super().close()
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print(f"Bot is ready. Logged in as {self.user}")
+        # Sync commands to a specific guild
+        await self.tree.sync(guild=discord.Object(id=948937918347608085))
 
 
 async def main():
