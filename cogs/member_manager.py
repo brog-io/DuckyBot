@@ -1,4 +1,5 @@
 from discord.ext import commands
+from discord import Embed
 import discord
 import re
 import logging
@@ -36,13 +37,42 @@ class MemberManager(commands.Cog):
             channel = self.bot.get_channel(welcome_channel_id)
             if channel:
                 try:
-                    await channel.send(
-                        f"Welcome to the server, {member.mention}! We're glad to have you here. <:lilducky:1069841394929238106>"
+                    # Send the initial welcome message
+                    message = await channel.send(
+                        f"Welcome to the server, {member.name}! 🎉 Feel free to introduce yourself here!"
                     )
-                    logger.info(f"Welcome message sent to {member.name}")
+
+                    # Create a thread tied to the welcome message
+                    thread = await message.create_thread(
+                        name=f"Meet {member.name}",
+                        auto_archive_duration=1440,  # Thread auto-archives after 24 hours
+                    )
+
+                    # Create an embed for the introduction
+                    embed = Embed(
+                        title=f"Welcome, {member.name}!",
+                        description=(
+                            f"Hi {member.mention}! 🎊 We're excited to have you here. "
+                            "Here are a few tips for making a great introduction:\n\n"
+                            "**- Share a little about yourself** Tell us where you're from, "
+                            "your interests, or what brought you to our community.\n\n"
+                            "**- What are your hobbies?** Whether it's gaming, music, or art, "
+                            "we'd love to know more about what you enjoy doing in your free time.\n\n"
+                            "**- Be friendly and positive!** This is a welcoming space, "
+                            "so let's make sure everyone feels comfortable."
+                        ),
+                        color=0xFFCD3F,
+                    )
+
+                    # Send the embed in the thread
+                    await thread.send(embed=embed)
+                    logger.info(f"Welcome thread created for {member.name}")
+
                 except Exception as e:
-                    logger.error(f"Error sending welcome message: {e}")
+                    logger.error(f"Error creating thread for {member.name}: {e}")
             else:
                 logger.error(
                     f"Could not find welcome channel with ID {welcome_channel_id}"
                 )
+        else:
+            logger.error("No welcome_channel_id configured in bot settings")
