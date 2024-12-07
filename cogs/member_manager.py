@@ -54,10 +54,8 @@ class MemberManager(commands.Cog):
                         description=(
                             f"Hi {member.mention}! 🎊 We're excited to have you here. "
                             "Here are a few tips for making a great introduction:\n\n"
-                            "**- Share a little about yourself** Tell us where you're from, "
-                            "your interests, or what brought you to our community.\n\n"
-                            "**- What are your hobbies?** Whether it's gaming, music, or art, "
-                            "we'd love to know more about what you enjoy doing in your free time.\n\n"
+                            "**- Share a little about yourself** Tell us where you're from, what you do, or what interests you. Are you a developer, a privacy enthusiast, or just someone curious about secure photo storage?\n\n"
+                            "**- What brings you to Ente?** We'd love to hear about your journey. Are you looking for a more private way to store your photos? Interested in open-source solutions? Concerned about data privacy?\n\n"
                             "**- Be friendly and positive!** This is a welcoming space, "
                             "so let's make sure everyone feels comfortable."
                         ),
