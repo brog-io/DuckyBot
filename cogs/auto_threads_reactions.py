@@ -6,7 +6,7 @@ class AutoThreadReactionsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.target_channel_id = 1025978742318833684  # Replace with your channel ID
-        self.reactions = ["💚"]
+        self.reactions = ["⭐"]
 
     @commands.Cog.listener()
     async def on_message(self, message):
