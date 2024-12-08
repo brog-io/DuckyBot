@@ -14,7 +14,6 @@ class EnteStatus(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"{self.__class__.__name__} is ready.")
         # Sync the slash commands
         try:
             synced = await self.bot.tree.sync()
