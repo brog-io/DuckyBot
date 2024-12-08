@@ -10,6 +10,7 @@ from cogs.member_manager import MemberManager
 from cogs.log_file_warning import LogFileWarning
 from cogs.ente_status import EnteStatus
 from cogs.auto_threads_reactions import AutoThreadReactionsCog
+from cogs.auto_publish import AutoPublish
 from utils.rate_limiter import RateLimiter
 
 # Configure logging
@@ -51,6 +52,7 @@ class EnteBot(commands.Bot):
         await self.add_cog(LogFileWarning(self))
         await self.add_cog(EnteStatus(self))
         await self.add_cog(AutoThreadReactionsCog(self))
+        await self.add_cog(AutoPublish(self))
 
         # Setup persistent view
         from cogs.file_tracker import PersistentView, RefreshButton
