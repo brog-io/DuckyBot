@@ -9,7 +9,7 @@ from cogs.message_links import MessageLinks
 from cogs.member_manager import MemberManager
 from cogs.log_file_warning import LogFileWarning
 from cogs.ente_status import EnteStatus
-from cogs.auto_threads_reactions import AutoThreadReactionsCog  # Import the new cog
+from cogs.auto_threads_reactions import AutoThreadReactionsCog
 from utils.rate_limiter import RateLimiter
 
 # Configure logging
