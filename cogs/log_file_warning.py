@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import logging
+import os
 
 
 class LogFileWarning(commands.Cog):
@@ -15,10 +16,11 @@ class LogFileWarning(commands.Cog):
         if message.author.bot:
             return
 
-        # Check if any attachment has 'log' in its filename
+        # Check if any attachment has 'log' in its filename and has an acceptable extension
         if message.attachments:
             for attachment in message.attachments:
-                if "log" in attachment.filename.lower():
+                filename = attachment.filename.lower()
+                if "log" in filename and filename.endswith((".zip", ".txt", ".log")):
                     try:
                         # Send reply and store the warning message
                         warning_msg = await message.reply(
