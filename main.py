@@ -4,6 +4,8 @@ import asyncio
 import aiohttp
 import json
 import logging
+import os
+from dotenv import load_dotenv
 from cogs.file_tracker import FileTracker
 from cogs.message_links import MessageLinks
 from cogs.member_manager import MemberManager
@@ -13,6 +15,9 @@ from cogs.auto_threads_reactions import AutoThreadReactionsCog
 from cogs.auto_publish import AutoPublish
 from cogs.bot_stats import BotStats
 from utils.rate_limiter import RateLimiter
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -82,7 +87,12 @@ async def main():
     try:
         bot = EnteBot()
         async with bot:
-            await bot.start(bot.config["discord_token"])
+            # Retrieve the token from the environment variable
+            token = os.getenv("DISCORD_TOKEN")
+            if token is None:
+                logger.error("Discord token not found in environment variables.")
+                return
+            await bot.start(token)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
