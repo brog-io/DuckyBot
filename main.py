@@ -1,3 +1,4 @@
+from cogs.search_docs import SearchDocs
 import discord
 from discord.ext import commands
 import asyncio
@@ -64,7 +65,8 @@ class EnteBot(commands.Bot):
         await self.add_cog(BotStats(self))
         await self.add_cog(InformationMessage(self))
         await self.add_cog(LinkCleaner(self))
-
+        await self.add_cog(SearchDocs(self))
+        
         # Setup persistent view
         from cogs.file_tracker import PersistentView, RefreshButton
 
@@ -73,7 +75,7 @@ class EnteBot(commands.Bot):
         self.add_view(view)  # This makes the button persistent across restarts
 
         # Sync commands to a specific guild
-        await self.tree.sync(guild=discord.Object(id=948937918347608085))
+        await self.tree.sync(guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))))
 
     async def close(self):
         if self.http_session:
@@ -84,7 +86,7 @@ class EnteBot(commands.Bot):
     async def on_ready(self):
         print(f"Bot is ready. Logged in as {self.user}")
         # Sync commands to a specific guild
-        await self.tree.sync(guild=discord.Object(id=948937918347608085))
+        await self.tree.sync(guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))))
 
 
 async def main():
