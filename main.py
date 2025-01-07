@@ -7,6 +7,7 @@ import logging
 import os
 from dotenv import load_dotenv
 from cogs.file_tracker import FileTracker
+from cogs.star_counter import StarCounter
 from cogs.message_links import MessageLinks
 from cogs.member_manager import MemberManager
 from cogs.log_file_warning import LogFileWarning
@@ -55,6 +56,7 @@ class EnteBot(commands.Bot):
 
         # Load cogs
         await self.add_cog(FileTracker(self))
+        await self.add_cog(StarCounter(self))
         await self.add_cog(MessageLinks(self))
         await self.add_cog(MemberManager(self))
         await self.add_cog(LogFileWarning(self))
@@ -67,6 +69,7 @@ class EnteBot(commands.Bot):
 
         # Setup persistent view
         from cogs.file_tracker import PersistentView, RefreshButton
+        from cogs.star_counter import PersistentView, RefreshButton
 
         view = PersistentView()
         view.add_item(RefreshButton())

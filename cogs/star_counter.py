@@ -17,28 +17,28 @@ class PersistentView(View):
 class RefreshButton(Button):
     def __init__(self):
         super().__init__(
-            label="Refresh Count",
+            label="Refresh Stars",
             style=discord.ButtonStyle.primary,
-            custom_id="refresh_count",
-            emoji=":refresh:1311347827795951637",
+            custom_id="refresh_stars",
+            emoji=":star:1326245255556763760",
         )
 
     async def callback(self, interaction: discord.Interaction):
-        cog = interaction.client.get_cog("FileTracker")
+        cog = interaction.client.get_cog("StarCounter")
         if cog:
             await cog.handle_refresh(interaction)
 
 
-class FileTracker(commands.Cog):
+class StarCounter(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.last_count = None
         self.last_channel_edit = datetime.utcnow()
         self.minimum_edit_interval = timedelta(minutes=5)
-        self.monitor_files.start()
+        self.monitor_stars.start()
 
     def cog_unload(self):
-        self.monitor_files.cancel()
+        self.monitor_stars.cancel()
 
     async def safe_channel_edit(self, channel, new_name):
         """Safely edit channel name with rate limit consideration"""
@@ -61,62 +61,50 @@ class FileTracker(commands.Cog):
                 logger.warning(
                     f"Rate limited on channel edit. Retry after: {retry_after}s"
                 )
-                # Update our minimum interval if the rate limit is longer
                 if retry_after > self.minimum_edit_interval.total_seconds():
                     self.minimum_edit_interval = timedelta(
                         seconds=retry_after * 1.1
                     )  # Add 10% buffer
                 await asyncio.sleep(retry_after)
-                # Retry the edit once after waiting
                 await channel.edit(name=new_name)
                 self.last_channel_edit = datetime.utcnow()
             else:
                 raise
 
     @tasks.loop(seconds=300)
-    async def monitor_files(self):
+    async def monitor_stars(self):
         try:
-            channel = self.bot.get_channel(int(self.bot.config["channel_id"]))
+            channel = self.bot.get_channel(int(self.bot.config["starchannel_id"]))
             if not channel:
                 return
 
             async with self.bot.http_session.get(
-                "https://api.ente.io/files/count"
+                "https://api.github-star-counter.workers.dev/user/ente-io"
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    current_count = data.get("count")
+                    current_count = data.get("stars")
 
                     if current_count != self.last_count:
                         await self.safe_channel_edit(
-                            channel, f"📷 {current_count:,} Files"
-                        )
-
-                        activity = discord.Activity(
-                            type=discord.ActivityType.custom,
-                            name=f"Securing {current_count:,} files",
-                            state=f"Securing {current_count:,} files",
-                        )
-                        await self.bot.change_presence(
-                            status=discord.Status.online, activity=activity
+                            channel, f"⭐ {current_count:,} Stars"
                         )
                         self.last_count = current_count
 
-                        # Log current rate limit settings
                         logger.info(
                             f"Current minimum edit interval: {self.minimum_edit_interval.total_seconds()}s"
                         )
         except Exception as e:
-            logger.error(f"Error in file monitoring: {e}", exc_info=True)
+            logger.error(f"Error in star monitoring: {e}", exc_info=True)
 
-    @monitor_files.before_loop
-    async def before_monitor_files(self):
+    @monitor_stars.before_loop
+    async def before_monitor_stars(self):
         await self.bot.wait_until_ready()
 
     @app_commands.command(
-        name="files", description="Get the current number of files protected by Ente"
+        name="stars", description="Get the current star count for ente-io on GitHub"
     )
-    async def files(self, interaction: discord.Interaction):
+    async def stars(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
     async def handle_refresh(self, interaction: discord.Interaction):
@@ -141,16 +129,16 @@ class FileTracker(commands.Cog):
 
         try:
             async with self.bot.http_session.get(
-                "https://api.ente.io/files/count"
+                "https://api.github-star-counter.workers.dev/user/ente-io"
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    current_count = data.get("count")
+                    current_count = data.get("stars")
 
                     embed = discord.Embed(
-                        title="Ente Files Count",
-                        description=f"Currently protecting **{current_count:,}** files",
-                        color=0xFFCD3F,
+                        title="GitHub Star Count",
+                        description=f"`ente-io` currently has **{current_count:,}** stars ⭐",
+                        color=0xFFD700,
                         timestamp=discord.utils.utcnow(),
                     )
 
@@ -164,16 +152,16 @@ class FileTracker(commands.Cog):
                         await interaction.response.send_message(embed=embed, view=view)
                 else:
                     await interaction.response.send_message(
-                        "Failed to fetch the current file count. Please try again later.",
+                        "Failed to fetch the star count. Please try again later.",
                         ephemeral=True,
                     )
         except Exception as e:
-            logger.error(f"Error fetching file count: {e}", exc_info=True)
+            logger.error(f"Error fetching star count: {e}", exc_info=True)
             await interaction.response.send_message(
-                "An error occurred while fetching the count. Please try again later.",
+                "An error occurred while fetching the star count. Please try again later.",
                 ephemeral=True,
             )
 
 
 async def setup(bot):
-    await bot.add_cog(FileTracker(bot))
+    await bot.add_cog(StarCounter(bot))
