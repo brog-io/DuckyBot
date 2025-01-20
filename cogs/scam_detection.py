@@ -1,26 +1,23 @@
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
-from mistralai import Mistral  # Import Mistral AI client
+from mistralai import Mistral
 import json
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env
 load_dotenv()
 mistral_api_key = os.getenv("MISTRAL_API_KEY")
 discord_token = os.getenv("DISCORD_BOT_TOKEN")
 
-# Load config from config.json
 config_file = "config.json"
 
 with open(config_file) as f:
     config = json.load(f)
 
-log_channel_id = config["log_channel_id"]  # Log channel ID
-whitelisted_role_ids = config["role_whitelist"]  # List of whitelisted role IDs
+log_channel_id = config["log_channel_id"]
+whitelisted_role_ids = config["role_whitelist"]
 
-# Initialize Mistral AI client
 mistral_client = Mistral(api_key=mistral_api_key)
 
 
@@ -35,14 +32,12 @@ async def check_scam_with_mistral(message):
         # Extract the first result
         moderation_result = response.results[0]
 
-        # Define scam-related categories
         scam_categories = ["fraud", "financial"]
 
-        # Check categories with a stricter confidence threshold
         is_scam = False
         for category in scam_categories:
             category_score = moderation_result.category_scores.get(category, 0)
-            if category_score > 0.01:  # Aggressive threshold (10%)
+            if category_score > 0.01:  # Aggressive threshold (1%)
                 is_scam = True
                 break
 
