@@ -5,8 +5,16 @@ import logging
 from discord.ui import Button, View
 import asyncio
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+import os
 
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
+
+GITHUB_API_URL = "https://api.github.com/repos/ente-io/ente"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Load GitHub token from .env
 
 
 class PersistentView(View):
@@ -20,7 +28,7 @@ class RefreshButton(Button):
             label="Refresh Stars",
             style=discord.ButtonStyle.primary,
             custom_id="refresh_stars",
-            emoji=":star:1326245255556763760",
+            emoji="⭐",
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -71,6 +79,22 @@ class StarCounter(commands.Cog):
             else:
                 raise
 
+    async def fetch_star_count(self):
+        """Fetch the star count from GitHub API."""
+        headers = {}
+        if GITHUB_TOKEN:  # Use a token for authenticated requests
+            headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
+        async with self.bot.http_session.get(
+            GITHUB_API_URL, headers=headers
+        ) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data.get("stargazers_count")
+            else:
+                logger.error(f"Failed to fetch star count: {response.status}")
+                return None
+
     @tasks.loop(seconds=300)
     async def monitor_stars(self):
         try:
@@ -78,22 +102,14 @@ class StarCounter(commands.Cog):
             if not channel:
                 return
 
-            async with self.bot.http_session.get(
-                "https://api.github-star-counter.workers.dev/user/ente-io"
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    current_count = data.get("stars")
+            current_count = await self.fetch_star_count()
 
-                    if current_count != self.last_count:
-                        await self.safe_channel_edit(
-                            channel, f"⭐ {current_count:,} Stars"
-                        )
-                        self.last_count = current_count
-
-                        logger.info(
-                            f"Current minimum edit interval: {self.minimum_edit_interval.total_seconds()}s"
-                        )
+            if current_count is not None and current_count != self.last_count:
+                await self.safe_channel_edit(channel, f"⭐ {current_count:,} Stars")
+                self.last_count = current_count
+                logger.info(
+                    f"Updated channel name to {current_count:,} stars. Minimum edit interval: {self.minimum_edit_interval.total_seconds()}s"
+                )
         except Exception as e:
             logger.error(f"Error in star monitoring: {e}", exc_info=True)
 
@@ -108,53 +124,30 @@ class StarCounter(commands.Cog):
         await self.handle_refresh(interaction)
 
     async def handle_refresh(self, interaction: discord.Interaction):
-        guild_id = str(interaction.guild_id)
-        user_id = str(interaction.user.id)
-
-        guild_allowed, guild_wait = self.bot.guild_limiter.check(guild_id)
-        if not guild_allowed:
-            await interaction.response.send_message(
-                f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
-                ephemeral=True,
-            )
-            return
-
-        user_allowed, user_wait = self.bot.user_limiter.check(user_id)
-        if not user_allowed:
-            await interaction.response.send_message(
-                f"Please wait {user_wait:.1f} seconds before using this command again.",
-                ephemeral=True,
-            )
-            return
-
         try:
-            async with self.bot.http_session.get(
-                "https://api.github-star-counter.workers.dev/user/ente-io"
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    current_count = data.get("stars")
+            current_count = await self.fetch_star_count()
 
-                    embed = discord.Embed(
-                        title="GitHub Star Count",
-                        description=f"`ente-io` currently has **{current_count:,}** stars ⭐",
-                        color=0xFFD700,
-                        timestamp=discord.utils.utcnow(),
-                    )
+            if current_count is not None:
+                embed = discord.Embed(
+                    title="GitHub Star Count",
+                    description=f"`ente-io/ente` currently has **{current_count:,}** stars ⭐",
+                    color=0xFFD700,
+                    timestamp=discord.utils.utcnow(),
+                )
 
-                    view = PersistentView()
-                    view.add_item(RefreshButton())
+                view = PersistentView()
+                view.add_item(RefreshButton())
 
-                    if isinstance(interaction.message, discord.Message):
-                        await interaction.message.edit(embed=embed, view=view)
-                        await interaction.response.defer()
-                    else:
-                        await interaction.response.send_message(embed=embed, view=view)
+                if isinstance(interaction.message, discord.Message):
+                    await interaction.message.edit(embed=embed, view=view)
+                    await interaction.response.defer()
                 else:
-                    await interaction.response.send_message(
-                        "Failed to fetch the star count. Please try again later.",
-                        ephemeral=True,
-                    )
+                    await interaction.response.send_message(embed=embed, view=view)
+            else:
+                await interaction.response.send_message(
+                    "Failed to fetch the star count. Please try again later.",
+                    ephemeral=True,
+                )
         except Exception as e:
             logger.error(f"Error fetching star count: {e}", exc_info=True)
             await interaction.response.send_message(
