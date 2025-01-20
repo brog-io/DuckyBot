@@ -17,6 +17,8 @@ from cogs.auto_publish import AutoPublish
 from cogs.bot_stats import BotStats
 from cogs.information_message import InformationMessage
 from cogs.link_cleaner import LinkCleaner
+from cogs.duplicate_message_detector import DuplicateMessageDetector
+from cogs.scam_detection import ScamDetection
 from utils.rate_limiter import RateLimiter
 
 # Load environment variables from .env file
@@ -66,6 +68,8 @@ class EnteBot(commands.Bot):
         await self.add_cog(BotStats(self))
         await self.add_cog(InformationMessage(self))
         await self.add_cog(LinkCleaner(self))
+        await self.add_cog(DuplicateMessageDetector(self))
+        await self.add_cog(ScamDetection(self))
 
         # Setup persistent view
         from cogs.file_tracker import PersistentView, RefreshButton
