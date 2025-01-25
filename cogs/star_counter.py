@@ -43,6 +43,9 @@ class StarCounter(commands.Cog):
         self.last_count = None
         self.last_channel_edit = datetime.utcnow()
         self.minimum_edit_interval = timedelta(minutes=5)
+        self.star_count_cache = None
+        self.last_cache_update = None
+        self.cache_duration = timedelta(minutes=5)
         self.monitor_stars.start()
 
     def cog_unload(self):
@@ -79,21 +82,38 @@ class StarCounter(commands.Cog):
             else:
                 raise
 
-    async def fetch_star_count(self):
-        """Fetch the star count from GitHub API."""
+    async def fetch_star_count(self) -> int | None:
+        """Fetch the star count from GitHub API with caching."""
+        # Check cache first
+        if (
+            self.star_count_cache is not None
+            and self.last_cache_update is not None
+            and datetime.utcnow() - self.last_cache_update < self.cache_duration
+        ):
+            return self.star_count_cache
+
         headers = {}
-        if GITHUB_TOKEN:  # Use a token for authenticated requests
+        if GITHUB_TOKEN:
             headers["Authorization"] = f"token {GITHUB_TOKEN}"
 
-        async with self.bot.http_session.get(
-            GITHUB_API_URL, headers=headers
-        ) as response:
-            if response.status == 200:
-                data = await response.json()
-                return data.get("stargazers_count")
-            else:
-                logger.error(f"Failed to fetch star count: {response.status}")
-                return None
+        try:
+            async with self.bot.http_session.get(
+                GITHUB_API_URL, headers=headers
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    self.star_count_cache = data.get("stargazers_count")
+                    self.last_cache_update = datetime.utcnow()
+                    return self.star_count_cache
+                elif response.status == 403:
+                    logger.error("GitHub API rate limit exceeded")
+                    return self.star_count_cache  # Return cached value if available
+                else:
+                    logger.error(f"Failed to fetch star count: {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error fetching star count: {e}")
+            return self.star_count_cache  # Return cached value if available
 
     @tasks.loop(seconds=300)
     async def monitor_stars(self):
@@ -130,7 +150,7 @@ class StarCounter(commands.Cog):
             if current_count is not None:
                 embed = discord.Embed(
                     title="GitHub Star Count",
-                    description=f"`ente-io/ente` currently has **{current_count:,}** stars ⭐",
+                    description=f"[`ente-io/ente`]({GITHUB_API_URL}) currently has **{current_count:,}** stars ⭐",
                     color=0xFFD700,
                     timestamp=discord.utils.utcnow(),
                 )

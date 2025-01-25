@@ -9,6 +9,11 @@ class LogFileWarning(commands.Cog):
         self.bot = bot
         self.logger = logging.getLogger(__name__)
         self.warning_messages = {}
+        self.log_extensions = {
+            ".zip",
+            ".txt",
+            ".log",
+        }  # Define as a set for O(1) lookup
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -20,7 +25,9 @@ class LogFileWarning(commands.Cog):
         if message.attachments:
             for attachment in message.attachments:
                 filename = attachment.filename.lower()
-                if "log" in filename and filename.endswith((".zip", ".txt", ".log")):
+                if "log" in filename and any(
+                    filename.endswith(ext) for ext in self.log_extensions
+                ):
                     try:
                         # Send reply and store the warning message
                         warning_msg = await message.reply(

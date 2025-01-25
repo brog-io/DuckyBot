@@ -3,26 +3,70 @@ from discord.ext import commands
 from collections import defaultdict
 import time
 import json
+from typing import Dict, List, Tuple, Set
+import asyncio
 
 
 class DuplicateMessageDetector(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.message_cache = defaultdict(lambda: [])  # Cache for tracking messages
-        self.config = self.load_config()  # Load configuration
-        self.time_window = self.config[
-            "time_window"
-        ]  # Time window for duplicate detection
-        self.min_message_length = self.config[
-            "min_message_length"
-        ]  # Minimum message length
-        self.log_channel_id = self.config["log_channel_id"]  # Log channel ID
-        self.role_whitelist = self.config["role_whitelist"]  # Whitelisted roles
+    # Constants
+    DEFAULT_CONFIG = {
+        "time_window": 60,
+        "min_message_length": 10,
+        "log_channel_id": None,
+        "role_whitelist": [],
+    }
+    CLEANUP_INTERVAL = 300  # 5 minutes
 
-    def load_config(self):
-        """Loads the configuration from the config.json file."""
-        with open("config.json", "r") as file:
-            return json.load(file)
+    def __init__(self, bot: commands.Bot):
+        """Initialize the duplicate message detector.
+
+        Args:
+            bot: The discord bot instance
+        """
+        self.bot = bot
+        self.message_cache: Dict[int, List[Tuple[str, float]]] = defaultdict(list)
+        self.config = self.load_config()
+        self.time_window = self.config["time_window"]
+        self.min_message_length = self.config["min_message_length"]
+        self.log_channel_id = self.config["log_channel_id"]
+        self.role_whitelist: Set[int] = set(self.config["role_whitelist"])
+
+        # Start cleanup task
+        self.cleanup_task = self.bot.loop.create_task(self.cleanup_old_messages())
+
+    def load_config(self) -> dict:
+        """Load the configuration from config.json file.
+
+        Returns:
+            dict: Configuration settings
+        """
+        try:
+            with open("config.json", "r") as file:
+                config = json.load(file)
+                # Merge with defaults to ensure all required fields exist
+                return {**self.DEFAULT_CONFIG, **config}
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error loading config, using defaults: {e}")
+            return self.DEFAULT_CONFIG
+
+    async def cleanup_old_messages(self):
+        """Periodically clean up old messages from the cache."""
+        while not self.bot.is_closed():
+            try:
+                current_time = time.time()
+                for user_id in list(self.message_cache.keys()):
+                    self.message_cache[user_id] = [
+                        (content, msg_time)
+                        for content, msg_time in self.message_cache[user_id]
+                        if (current_time - msg_time) <= self.time_window
+                    ]
+                    # Remove empty lists
+                    if not self.message_cache[user_id]:
+                        del self.message_cache[user_id]
+                await asyncio.sleep(self.CLEANUP_INTERVAL)
+            except Exception as e:
+                print(f"Error in cleanup task: {e}")
+                await asyncio.sleep(self.CLEANUP_INTERVAL)
 
     def is_whitelisted(self, member):
         """Checks if a user has a whitelisted role."""
@@ -32,56 +76,75 @@ class DuplicateMessageDetector(commands.Cog):
         return any(role_id in member_roles for role_id in self.role_whitelist)
 
     @commands.Cog.listener()
-    async def on_message(self, message):
-        # Ignore bot messages
-        if message.author.bot:
-            return
-
-        user_id = message.author.id
-        content = message.content
-        timestamp = time.time()
-
-        # Check if the user is whitelisted
-        if self.is_whitelisted(message.author):
-            return
-
-        # Skip short messages
-        if len(content) < self.min_message_length:
-            return
-
-        # Check for repeated messages
-        user_messages = self.message_cache[user_id]
-        for msg_content, msg_time in user_messages:
-            if content == msg_content and (timestamp - msg_time) <= self.time_window:
-                await message.delete()  # Delete the duplicate message
-                await self.log_deletion(message, content)  # Log the deletion
+    async def on_message(self, message: discord.Message):
+        try:
+            # Ignore bot messages
+            if message.author.bot:
                 return
 
-        # Add the current message to the cache
-        user_messages.append((content, timestamp))
-        # Keep only recent messages in the cache
-        self.message_cache[user_id] = [
-            (msg_content, msg_time)
-            for msg_content, msg_time in user_messages
-            if (timestamp - msg_time) <= self.time_window
-        ]
+            user_id = message.author.id
+            content = message.content
+            timestamp = time.time()
 
-    async def log_deletion(self, message, content):
-        """Logs deleted messages to the configured log channel in an embed format."""
-        log_channel = self.bot.get_channel(self.log_channel_id)
-        if log_channel:
-            embed = discord.Embed(
-                title="Duplicate Message Deleted",
-                description=f"Message from {message.author.mention} ({message.author.id}) was deleted for being a duplicate.",
-                color=0xFFCD3F,
-            )
-            embed.add_field(name="Channel", value=message.channel.mention)
-            embed.add_field(name="Content", value=f"`{content}`", inline=False)
-            embed.set_footer(
-                text=f"Message deleted at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}"
-            )
+            # Check if the user is whitelisted
+            if self.is_whitelisted(message.author):
+                return
 
-            await log_channel.send(embed=embed)
+            # Skip short messages
+            if len(content) < self.min_message_length:
+                return
+
+            # Check for repeated messages
+            user_messages = self.message_cache[user_id]
+            for msg_content, msg_time in user_messages:
+                if (
+                    content == msg_content
+                    and (timestamp - msg_time) <= self.time_window
+                ):
+                    await message.delete()  # Delete the duplicate message
+                    await self.log_deletion(message, content)  # Log the deletion
+                    return
+
+            # Add the current message to the cache
+            user_messages.append((content, timestamp))
+            # Keep only recent messages in the cache
+            self.message_cache[user_id] = [
+                (msg_content, msg_time)
+                for msg_content, msg_time in user_messages
+                if (timestamp - msg_time) <= self.time_window
+            ]
+        except Exception as e:
+            print(f"Error processing message: {e}")
+
+    async def log_deletion(self, message: discord.Message, content: str):
+        """Log deleted messages to the configured log channel.
+
+        Args:
+            message: The deleted discord message
+            content: Content of the deleted message
+        """
+        try:
+            log_channel = self.bot.get_channel(self.log_channel_id)
+            if log_channel:
+                embed = discord.Embed(
+                    title="Duplicate Message Deleted",
+                    description=f"Message from {message.author.mention} ({message.author.id}) was deleted for being a duplicate.",
+                    color=0xFFCD3F,
+                )
+                embed.add_field(name="Channel", value=message.channel.mention)
+                embed.add_field(name="Content", value=f"`{content}`", inline=False)
+                embed.set_footer(
+                    text=f"Message deleted at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}"
+                )
+
+                await log_channel.send(embed=embed)
+        except Exception as e:
+            print(f"Error logging message deletion: {e}")
+
+    def cog_unload(self):
+        """Cleanup when the cog is unloaded."""
+        if hasattr(self, "cleanup_task"):
+            self.cleanup_task.cancel()
 
 
 async def setup(bot):
