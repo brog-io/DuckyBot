@@ -5,6 +5,8 @@ import logging
 from discord.ui import Button, View
 import asyncio
 from datetime import datetime, timedelta
+from typing import Optional
+from aiohttp import ClientTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +16,7 @@ class PersistentView(View):
         super().__init__(timeout=None)
 
 
-class RefreshButton(Button):
+class RefreshButton(Button):  # Move this outside FileTracker class
     def __init__(self):
         super().__init__(
             label="Refresh Count",
@@ -30,11 +32,15 @@ class RefreshButton(Button):
 
 
 class FileTracker(commands.Cog):
+    # Constants
+    API_URL = "https://api.ente.io/files/count"
+    API_TIMEOUT = ClientTimeout(total=10)  # 10 seconds timeout
+
     def __init__(self, bot):
         self.bot = bot
-        self.last_count = None
-        self.last_channel_edit = datetime.utcnow()
-        self.minimum_edit_interval = timedelta(minutes=5)
+        self.last_count: Optional[int] = None
+        self.last_channel_edit: datetime = datetime.utcnow()
+        self.minimum_edit_interval: timedelta = timedelta(minutes=5)
         self.monitor_files.start()
 
     def cog_unload(self):
@@ -73,39 +79,46 @@ class FileTracker(commands.Cog):
             else:
                 raise
 
+    async def fetch_file_count(self) -> Optional[int]:
+        """Fetch the current file count from the API."""
+        try:
+            async with self.bot.http_session.get(
+                self.API_URL, timeout=self.API_TIMEOUT
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("count")
+        except asyncio.TimeoutError:
+            logger.error("API request timed out")
+        except Exception as e:
+            logger.error(f"Error fetching file count: {e}", exc_info=True)
+        return None
+
     @tasks.loop(seconds=300)
     async def monitor_files(self):
+        """Monitor and update the file count in channel name and bot presence."""
         try:
             channel = self.bot.get_channel(int(self.bot.config["channel_id"]))
             if not channel:
                 return
 
-            async with self.bot.http_session.get(
-                "https://api.ente.io/files/count"
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    current_count = data.get("count")
+            current_count = await self.fetch_file_count()
+            if current_count is not None and current_count != self.last_count:
+                await self.safe_channel_edit(channel, f"📷 {current_count:,} Files")
 
-                    if current_count != self.last_count:
-                        await self.safe_channel_edit(
-                            channel, f"📷 {current_count:,} Files"
-                        )
+                activity = discord.Activity(
+                    type=discord.ActivityType.custom,
+                    name=f"Securing {current_count:,} files",
+                    state=f"Securing {current_count:,} files",
+                )
+                await self.bot.change_presence(
+                    status=discord.Status.online, activity=activity
+                )
+                self.last_count = current_count
 
-                        activity = discord.Activity(
-                            type=discord.ActivityType.custom,
-                            name=f"Securing {current_count:,} files",
-                            state=f"Securing {current_count:,} files",
-                        )
-                        await self.bot.change_presence(
-                            status=discord.Status.online, activity=activity
-                        )
-                        self.last_count = current_count
-
-                        # Log current rate limit settings
-                        logger.info(
-                            f"Current minimum edit interval: {self.minimum_edit_interval.total_seconds()}s"
-                        )
+                logger.info(
+                    f"Current minimum edit interval: {self.minimum_edit_interval.total_seconds()}s"
+                )
         except Exception as e:
             logger.error(f"Error in file monitoring: {e}", exc_info=True)
 
@@ -140,33 +153,28 @@ class FileTracker(commands.Cog):
             return
 
         try:
-            async with self.bot.http_session.get(
-                "https://api.ente.io/files/count"
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    current_count = data.get("count")
+            current_count = await self.fetch_file_count()
+            if current_count is not None:
+                embed = discord.Embed(
+                    title="Ente Files Count",
+                    description=f"Currently protecting **{current_count:,}** files",
+                    color=0xFFCD3F,
+                    timestamp=discord.utils.utcnow(),
+                )
 
-                    embed = discord.Embed(
-                        title="Ente Files Count",
-                        description=f"Currently protecting **{current_count:,}** files",
-                        color=0xFFCD3F,
-                        timestamp=discord.utils.utcnow(),
-                    )
+                view = PersistentView()
+                view.add_item(RefreshButton())  # Use the nested class
 
-                    view = PersistentView()
-                    view.add_item(RefreshButton())
-
-                    if isinstance(interaction.message, discord.Message):
-                        await interaction.message.edit(embed=embed, view=view)
-                        await interaction.response.defer()
-                    else:
-                        await interaction.response.send_message(embed=embed, view=view)
+                if isinstance(interaction.message, discord.Message):
+                    await interaction.message.edit(embed=embed, view=view)
+                    await interaction.response.defer()
                 else:
-                    await interaction.response.send_message(
-                        "Failed to fetch the current file count. Please try again later.",
-                        ephemeral=True,
-                    )
+                    await interaction.response.send_message(embed=embed, view=view)
+            else:
+                await interaction.response.send_message(
+                    "Failed to fetch the current file count. Please try again later.",
+                    ephemeral=True,
+                )
         except Exception as e:
             logger.error(f"Error fetching file count: {e}", exc_info=True)
             await interaction.response.send_message(

@@ -5,6 +5,7 @@ from mistralai import Mistral
 import json
 import os
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
 mistral_api_key = os.getenv("MISTRAL_API_KEY")
@@ -20,31 +21,28 @@ whitelisted_role_ids = config["role_whitelist"]
 
 mistral_client = Mistral(api_key=mistral_api_key)
 
+logger = logging.getLogger(__name__)
 
-async def check_scam_with_mistral(message):
+
+async def check_scam_with_mistral(message: str) -> tuple[bool, dict]:
     try:
-        # Call the Moderation API with the provided message
         response = mistral_client.classifiers.moderate(
             model="mistral-moderation-latest",
             inputs=[message],
         )
-
-        # Extract the first result
         moderation_result = response.results[0]
 
         scam_categories = ["fraud", "financial"]
+        category_scores = {
+            category: moderation_result.category_scores.get(category, 0)
+            for category in scam_categories
+        }
 
-        is_scam = False
-        for category in scam_categories:
-            category_score = moderation_result.category_scores.get(category, 0)
-            if category_score > 0.01:  # Aggressive threshold (1%)
-                is_scam = True
-                break
-
-        return is_scam
+        is_scam = any(score > 0.70 for score in category_scores.values())
+        return is_scam, category_scores
     except Exception as e:
-        print(f"Error with Mistral Moderation API: {e}")
-        return False
+        logger.error(f"Error with Mistral Moderation API: {e}")
+        return False, {}
 
 
 class ModerationButtons(View):
@@ -111,29 +109,41 @@ class ModerationButtons(View):
 class ScamDetection(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.cooldowns = commands.CooldownMapping.from_cooldown(
+            3, 60, commands.BucketType.user
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.author.bot:
             return
 
-        if not message.guild:  # Ignore direct messages
+        if not message.guild:
             return
 
-        # Check if the message author has a whitelisted role
+        # Add cooldown check
+        bucket = self.cooldowns.get_bucket(message)
+        if bucket.update_rate_limit():
+            return
+
+        # Check whitelisted roles
         author_roles = [role.id for role in message.author.roles]
         if any(role_id in whitelisted_role_ids for role_id in author_roles):
             return
 
-        is_scam = await check_scam_with_mistral(message.content)
+        is_scam, scores = await check_scam_with_mistral(message.content)
 
         if is_scam:
             log_channel = self.bot.get_channel(log_channel_id)
             if log_channel:
                 embed = discord.Embed(
-                    title="Potential Scam Detected",
+                    title="🚨 Potential Scam Detected",
                     description=f"Message from {message.author.mention} in {message.channel.mention}:\n\n{message.content}",
                     color=discord.Color.red(),
+                )
+                embed.add_field(
+                    name="Scam Confidence Scores",
+                    value="\n".join(f"• {k}: {v:.1%}" for k, v in scores.items()),
                 )
                 embed.set_footer(
                     text=f"User ID: {message.author.id} | Message ID: {message.id}"
@@ -142,7 +152,7 @@ class ScamDetection(commands.Cog):
                 view = ModerationButtons(message, message.author)
                 await log_channel.send(embed=embed, view=view)
             else:
-                print("Log channel not found. Check the log_channel_id.")
+                logger.error("Log channel not found. Check the log_channel_id.")
 
     @commands.command()
     async def start(self, ctx):
