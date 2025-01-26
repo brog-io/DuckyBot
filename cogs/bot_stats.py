@@ -7,34 +7,6 @@ import aiohttp
 import os
 
 
-def is_developer():
-    """Check if the user is the developer"""
-
-    async def predicate(interaction: discord.Interaction) -> bool:
-        if interaction.user.id != 1086344307574837309:
-            await interaction.response.send_message(
-                "❌ Only the developer can use this command!", ephemeral=True
-            )
-            return False
-        return True
-
-    return app_commands.check(predicate)
-
-
-class DevOnlyCommand(app_commands.Command):
-    """A custom command class that's only visible to the developer"""
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == 1086344307574837309
-
-    @property
-    def command_ids(self):
-        # Hide command from everyone except developer
-        if hasattr(self, "_command_ids"):
-            return self._command_ids
-        return {}
-
-
 class BotStats(commands.Cog):
     """A cog for bot statistics like uptime and ping."""
 
@@ -44,14 +16,6 @@ class BotStats(commands.Cog):
         self.ptero_api_key = os.getenv("PTERO_API_KEY")
         self.ptero_url = os.getenv("PTERO_URL")
         self.server_id = os.getenv("PTERO_SERVER_ID")
-
-        # Replace the restart command with our custom version
-        restart_cmd = DevOnlyCommand(
-            name="restart",
-            description="Restart the bot server 🔄",
-            callback=self.restart_server,
-        )
-        self.bot.tree.add_command(restart_cmd)
 
     @app_commands.command(
         name="stats", description="Check how long I've been waddling around! 🦆"
@@ -125,14 +89,10 @@ class BotStats(commands.Cog):
             ) as response:
                 return response.status == 204
 
+    @app_commands.command(name="restart", description="Restart the bot server 🔄")
+    @app_commands.is_owner()
     async def restart_server(self, interaction: discord.Interaction):
-        """Restart the bot server (Developer only)."""
-        if interaction.user.id != 1086344307574837309:
-            await interaction.response.send_message(
-                "❌ Only the developer can use this command!", ephemeral=True
-            )
-            return
-
+        """Restart the bot server (Owner only)."""
         if not self.ptero_api_key or not self.ptero_url or not self.server_id:
             await interaction.response.send_message(
                 "❌ Pterodactyl API is not configured!", ephemeral=True
