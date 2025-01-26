@@ -1,8 +1,16 @@
 import discord
 from discord.ext import commands
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 class AutoPublish(commands.Cog):
+    """
+    A cog that automatically publishes messages in announcement channels.
+    """
+
     def __init__(self, bot):
         self.bot = bot
 
@@ -20,15 +28,17 @@ class AutoPublish(commands.Cog):
             try:
                 # Attempt to publish the message
                 await message.publish()
-                print(
+                logger.info(
                     f"Published message in {message.channel.name} (ID: {message.channel.id})"
                 )
             except discord.Forbidden:
-                print(
-                    f"Missing permissions to publish messages in {message.channel.name}"
+                logger.warning(
+                    f"Missing permissions to publish messages in {message.channel.name} (ID: {message.channel.id})"
                 )
             except discord.HTTPException as e:
-                print(f"Failed to publish message in {message.channel.name}: {e}")
+                logger.error(
+                    f"Failed to publish message in {message.channel.name} (ID: {message.channel.id}): {str(e)}"
+                )
 
 
 async def setup(bot):

@@ -72,6 +72,18 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 
+class SensitiveDataFilter(logging.Filter):
+    def filter(self, record):
+        # Remove sensitive data from logs
+        if hasattr(record, "msg"):
+            record.msg = self._sanitize_message(record.msg)
+        return True
+
+    def _sanitize_message(self, message):
+        # Add sanitization logic here
+        return message
+
+
 class EnteBot(commands.Bot):
     def __init__(self, config_path: str = "config.json"):
         intents = discord.Intents.default()

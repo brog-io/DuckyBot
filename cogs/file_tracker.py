@@ -35,12 +35,15 @@ class FileTracker(commands.Cog):
     # Constants
     API_URL = "https://api.ente.io/files/count"
     API_TIMEOUT = ClientTimeout(total=10)  # 10 seconds timeout
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1  # seconds
 
     def __init__(self, bot):
         self.bot = bot
         self.last_count: Optional[int] = None
         self.last_channel_edit: datetime = datetime.utcnow()
         self.minimum_edit_interval: timedelta = timedelta(minutes=5)
+        self.button_cooldowns = {}  # Add cooldown tracking
         self.monitor_files.start()
 
     def cog_unload(self):
@@ -80,18 +83,38 @@ class FileTracker(commands.Cog):
                 raise
 
     async def fetch_file_count(self) -> Optional[int]:
-        """Fetch the current file count from the API."""
-        try:
-            async with self.bot.http_session.get(
-                self.API_URL, timeout=self.API_TIMEOUT
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("count")
-        except asyncio.TimeoutError:
-            logger.error("API request timed out")
-        except Exception as e:
-            logger.error(f"Error fetching file count: {e}", exc_info=True)
+        """Fetch the current file count from the API with retries."""
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                async with self.bot.http_session.get(
+                    self.API_URL, timeout=self.API_TIMEOUT
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get("count")
+                    elif response.status == 429:  # Rate limit
+                        retry_after = float(
+                            response.headers.get("Retry-After", self.RETRY_DELAY)
+                        )
+                        logger.warning(f"Rate limited by API. Waiting {retry_after}s")
+                        await asyncio.sleep(retry_after)
+                    else:
+                        logger.error(f"API returned status code: {response.status}")
+                        await asyncio.sleep(self.RETRY_DELAY)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"API request timed out (attempt {attempt + 1}/{self.MAX_RETRIES})"
+                )
+                if attempt < self.MAX_RETRIES - 1:  # Don't sleep on last attempt
+                    await asyncio.sleep(self.RETRY_DELAY)
+            except Exception as e:
+                logger.error(
+                    f"Error fetching file count (attempt {attempt + 1}/{self.MAX_RETRIES}): {e}",
+                    exc_info=True,
+                )
+                if attempt < self.MAX_RETRIES - 1:  # Don't sleep on last attempt
+                    await asyncio.sleep(self.RETRY_DELAY)
+
         return None
 
     @tasks.loop(seconds=300)
@@ -129,33 +152,44 @@ class FileTracker(commands.Cog):
     @app_commands.command(
         name="files", description="Get the current number of files protected by Ente"
     )
+    @app_commands.checks.cooldown(
+        1, 30, key=lambda i: (i.guild_id, i.user.id)
+    )  # 1 use per 30s per user per guild
     async def files(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
 
+    @files.error
+    async def files_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            await interaction.response.send_message(
+                f"🦆 *Quack!* I need to catch my breath! Try again in {error.retry_after:.1f} seconds! 🕒",
+                ephemeral=True,
+            )
+
     async def handle_refresh(self, interaction: discord.Interaction):
-        guild_id = str(interaction.guild_id)
-        user_id = str(interaction.user.id)
-
-        guild_allowed, guild_wait = self.bot.guild_limiter.check(guild_id)
-        if not guild_allowed:
-            await interaction.response.send_message(
-                f"This server is being rate limited. Please wait {guild_wait:.1f} seconds.",
-                ephemeral=True,
-            )
-            return
-
-        user_allowed, user_wait = self.bot.user_limiter.check(user_id)
-        if not user_allowed:
-            await interaction.response.send_message(
-                f"Please wait {user_wait:.1f} seconds before using this command again.",
-                ephemeral=True,
-            )
-            return
-
         try:
+            # Check cooldown
+            user_id = interaction.user.id
+            current_time = datetime.utcnow()
+            if user_id in self.button_cooldowns:
+                time_elapsed = current_time - self.button_cooldowns[user_id]
+                if time_elapsed < timedelta(seconds=30):  # 30 second cooldown
+                    remaining = round(30 - time_elapsed.total_seconds())
+                    await interaction.response.send_message(
+                        f"🐣 *Quack!* I need to catch my breath! Try again in {remaining} seconds! 🕒",
+                        ephemeral=True,
+                    )
+                    return
+
+            # Update cooldown
+            self.button_cooldowns[user_id] = current_time
+
+            # Defer the interaction first
+            await interaction.response.defer()
+
             current_count = await self.fetch_file_count()
             if current_count is not None:
-                embed = discord.Embed(
+                files_embed = discord.Embed(
                     title="Ente Files Count",
                     description=f"Currently protecting **{current_count:,}** files",
                     color=0xFFCD3F,
@@ -163,21 +197,20 @@ class FileTracker(commands.Cog):
                 )
 
                 view = PersistentView()
-                view.add_item(RefreshButton())  # Use the nested class
+                view.add_item(RefreshButton())
 
-                if isinstance(interaction.message, discord.Message):
-                    await interaction.message.edit(embed=embed, view=view)
-                    await interaction.response.defer()
-                else:
-                    await interaction.response.send_message(embed=embed, view=view)
+                try:
+                    await interaction.message.edit(embed=files_embed, view=view)
+                except Exception as e:
+                    await interaction.followup.send(embed=files_embed, view=view)
             else:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Failed to fetch the current file count. Please try again later.",
                     ephemeral=True,
                 )
         except Exception as e:
             logger.error(f"Error fetching file count: {e}", exc_info=True)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "An error occurred while fetching the count. Please try again later.",
                 ephemeral=True,
             )
