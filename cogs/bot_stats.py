@@ -90,7 +90,6 @@ class BotStats(commands.Cog):
                 return response.status == 204
 
     @app_commands.command(name="restart", description="Restart the bot server 🔄")
-    @commands.is_owner()
     async def restart_server(self, interaction: discord.Interaction):
         """Restart the bot server (Owner only)."""
         if not self.ptero_api_key or not self.ptero_url or not self.server_id:
@@ -127,6 +126,14 @@ class BotStats(commands.Cog):
                 if response.status == 200:
                     return await response.json()
                 return None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != 1086344307574837309:
+            await interaction.response.send_message(
+                "Only the bot owner can use this command.", ephemeral=True
+            )
+            return False
+        return True
 
 
 def setup(bot):
