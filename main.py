@@ -176,11 +176,6 @@ class EnteBot(commands.Bot):
     @commands.Cog.listener()
     async def on_ready(self):
         self.logger.info(f"Bot is ready. Logged in as {self.user}")
-        try:
-            await self.tree.sync(guild=discord.Object(id=948937918347608085))
-            self.logger.info("Commands synced successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to sync commands: {e}", exc_info=True)
 
 
 async def main():
