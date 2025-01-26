@@ -89,7 +89,9 @@ class EnteBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix="d!", intents=intents)
+        super().__init__(
+            command_prefix="d!", intents=intents, owner_id=1086344307574837309
+        )
         self.logger = logging.getLogger(__name__)  # Set up logger first
         self.config = self.load_config(config_path)
         self.http_session = None
