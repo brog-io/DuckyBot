@@ -4,7 +4,7 @@ from discord import app_commands
 import logging
 from discord.ui import Button, View
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from dotenv import load_dotenv
 import os
 
@@ -41,11 +41,12 @@ class StarCounter(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.last_count = None
-        self.last_channel_edit = datetime.utcnow()
+        self.last_channel_edit = datetime.now(UTC)
         self.minimum_edit_interval = timedelta(minutes=5)
         self.star_count_cache = None
         self.last_cache_update = None
         self.cache_duration = timedelta(minutes=5)
+        self.button_cooldowns = {}  # Add cooldown tracking
         self.monitor_stars.start()
 
     def cog_unload(self):
@@ -53,7 +54,7 @@ class StarCounter(commands.Cog):
 
     async def safe_channel_edit(self, channel, new_name):
         """Safely edit channel name with rate limit consideration"""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         time_since_last_edit = now - self.last_channel_edit
 
         if time_since_last_edit < self.minimum_edit_interval:
@@ -65,7 +66,7 @@ class StarCounter(commands.Cog):
 
         try:
             await channel.edit(name=new_name)
-            self.last_channel_edit = datetime.utcnow()
+            self.last_channel_edit = datetime.now(UTC)
         except discord.HTTPException as e:
             if e.code == 429:  # Rate limit error
                 retry_after = e.retry_after
@@ -78,7 +79,7 @@ class StarCounter(commands.Cog):
                     )  # Add 10% buffer
                 await asyncio.sleep(retry_after)
                 await channel.edit(name=new_name)
-                self.last_channel_edit = datetime.utcnow()
+                self.last_channel_edit = datetime.now(UTC)
             else:
                 raise
 
@@ -88,7 +89,7 @@ class StarCounter(commands.Cog):
         if (
             self.star_count_cache is not None
             and self.last_cache_update is not None
-            and datetime.utcnow() - self.last_cache_update < self.cache_duration
+            and datetime.now(UTC) - self.last_cache_update < self.cache_duration
         ):
             return self.star_count_cache
 
@@ -103,7 +104,7 @@ class StarCounter(commands.Cog):
                 if response.status == 200:
                     data = await response.json()
                     self.star_count_cache = data.get("stargazers_count")
-                    self.last_cache_update = datetime.utcnow()
+                    self.last_cache_update = datetime.now(UTC)
                     return self.star_count_cache
                 elif response.status == 403:
                     logger.error("GitHub API rate limit exceeded")
@@ -145,10 +146,38 @@ class StarCounter(commands.Cog):
 
     async def handle_refresh(self, interaction: discord.Interaction):
         try:
+            # Check cooldown
+            user_id = interaction.user.id
+            current_time = datetime.now(UTC)
+            if user_id in self.button_cooldowns:
+                time_elapsed = current_time - self.button_cooldowns[user_id]
+                if time_elapsed < timedelta(seconds=30):  # 30 second cooldown
+                    remaining = round(30 - time_elapsed.total_seconds())
+                    await interaction.response.send_message(
+                        f"🐣 *Quack!* I need to catch my breath! Try again in {remaining} seconds! 🕒",
+                        ephemeral=True,
+                    )
+                    return
+
+            await interaction.response.defer()
+            # Force a fresh fetch by temporarily clearing the cache
+            old_cache = self.star_count_cache
+            old_cache_time = self.last_cache_update
+            self.star_count_cache = None
+            self.last_cache_update = None
+
             current_count = await self.fetch_star_count()
 
+            # Restore cache if fetch failed
+            if current_count is None:
+                self.star_count_cache = old_cache
+                self.last_cache_update = old_cache_time
+
+            # Update cooldown
+            self.button_cooldowns[user_id] = current_time
+
             if current_count is not None:
-                embed = discord.Embed(
+                star_embed = discord.Embed(
                     title="GitHub Star Count",
                     description=f"[`ente-io/ente`]({GITHUB_API_URL}) currently has **{current_count:,}** stars ⭐",
                     color=0xFFD700,
@@ -158,20 +187,19 @@ class StarCounter(commands.Cog):
                 view = PersistentView()
                 view.add_item(RefreshButton())
 
-                if isinstance(interaction.message, discord.Message):
-                    await interaction.message.edit(embed=embed, view=view)
-                    await interaction.response.defer()
-                else:
-                    await interaction.response.send_message(embed=embed, view=view)
+                try:
+                    await interaction.message.edit(embed=star_embed, view=view)
+                except Exception as e:
+                    await interaction.followup.send(embed=star_embed, view=view)
             else:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Failed to fetch the star count. Please try again later.",
                     ephemeral=True,
                 )
         except Exception as e:
             logger.error(f"Error fetching star count: {e}", exc_info=True)
-            await interaction.response.send_message(
-                "An error occurred while fetching the star count. Please try again later.",
+            await interaction.followup.send(
+                "An error occurred while fetching the count. Please try again later.",
                 ephemeral=True,
             )
 

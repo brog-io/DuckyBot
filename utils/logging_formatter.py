@@ -1,12 +1,12 @@
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 class DetailedFormatter(logging.Formatter):
     def format(self, record):
         # Add timestamp in ISO format
-        record.timestamp = datetime.utcnow().isoformat()
+        record.timestamp = datetime.now(datetime.UTC).isoformat()
 
         # Create a structured log entry
         log_entry = {

@@ -1,11 +1,16 @@
 import discord
 from discord.ext import commands
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AutoThreadReactionsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.target_channel_id = 1025978742318833684
+        self.target_channel_id = bot.config.get(
+            "thread_channel_id", 1025978742318833684
+        )
         self.reactions = ["⭐"]
 
     @commands.Cog.listener()
@@ -30,12 +35,18 @@ class AutoThreadReactionsCog(commands.Cog):
                         f"Thread created for discussing this picture by {message.author.mention}."
                     )
                 except discord.Forbidden:
-                    print("Bot lacks permissions to create threads.")
+                    logger.error("Bot lacks permissions to create threads.")
                 except discord.HTTPException as e:
-                    print(f"Failed to create thread: {e}")
+                    logger.error(f"Failed to create thread: {e}")
             else:
-                # Delete the message
-                await message.delete()
+                try:
+                    await message.delete()
+                except discord.Forbidden:
+                    logger.error("Bot lacks permissions to delete messages.")
+                except discord.NotFound:
+                    logger.warning("Message was already deleted.")
+                except discord.HTTPException as e:
+                    logger.error(f"Failed to delete message: {e}")
 
 
 async def setup(bot):

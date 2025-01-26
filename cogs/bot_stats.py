@@ -12,7 +12,9 @@ class BotStats(commands.Cog):
         self.bot = bot
         self.start_time = time.time()
 
-    @app_commands.command(name="stats", description="Check the bot's uptime and ping.")
+    @app_commands.command(
+        name="stats", description="Check how long I've been waddling around! 🦆"
+    )
     async def stats_slash(self, interaction: discord.Interaction):
         """Check the bot's uptime and ping with a slash command."""
         current_time = time.time()
@@ -21,9 +23,18 @@ class BotStats(commands.Cog):
 
         latency = round(self.bot.latency * 1000)
 
-        embed = discord.Embed(title="Ducky Stats", color=0xFFCD3F)
-        embed.add_field(name="Uptime", value=uptime_str, inline=False)
-        embed.add_field(name="Ping", value=f"{latency}ms", inline=False)
+        embed = discord.Embed(title="🦆 Ducky's Stats", color=0xFFCD3F)
+        embed.add_field(
+            name="Time Spent Waddling",
+            value=f"I've been swimming around for {uptime_str}! 🏊‍♂️",
+            inline=False,
+        )
+        embed.add_field(
+            name="Duck Speed",
+            value=f"Quack! My response time is {latency}ms 🏃‍♂️",
+            inline=False,
+        )
+        embed.set_footer(text="Thanks for checking on me! *quack quack*")
 
         await interaction.response.send_message(embed=embed)
 

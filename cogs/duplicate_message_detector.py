@@ -127,14 +127,14 @@ class DuplicateMessageDetector(commands.Cog):
             log_channel = self.bot.get_channel(self.log_channel_id)
             if log_channel:
                 embed = discord.Embed(
-                    title="Duplicate Message Deleted",
-                    description=f"Message from {message.author.mention} ({message.author.id}) was deleted for being a duplicate.",
+                    title="🦆 Duplicate Message Spotted!",
+                    description=f"*Quack quack!* I noticed {message.author.mention} sent the same message twice, so I helped clean up! 🧹",
                     color=0xFFCD3F,
                 )
-                embed.add_field(name="Channel", value=message.channel.mention)
-                embed.add_field(name="Content", value=f"`{content}`", inline=False)
+                embed.add_field(name="Where", value=message.channel.mention)
+                embed.add_field(name="The Message", value=f"`{content}`", inline=False)
                 embed.set_footer(
-                    text=f"Message deleted at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}"
+                    text=f"Cleaned up at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} 🧼"
                 )
 
                 await log_channel.send(embed=embed)
