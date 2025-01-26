@@ -73,44 +73,6 @@ class BotStats(commands.Cog):
         embed.set_footer(text="Thanks for checking on me! *quack quack*")
         await interaction.response.send_message(embed=embed)
 
-    async def send_power_action(self, action: str) -> bool:
-        """Send power action to Pterodactyl server"""
-        headers = {
-            "Authorization": f"Bearer {self.ptero_api_key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.ptero_url}/api/client/servers/{self.server_id}/power",
-                headers=headers,
-                json={"signal": action},
-            ) as response:
-                return response.status == 204
-
-    @app_commands.command(name="restart", description="Restart the bot server 🔄")
-    async def restart_server(self, interaction: discord.Interaction):
-        """Restart the bot server (Owner only)."""
-        if not self.ptero_api_key or not self.ptero_url or not self.server_id:
-            await interaction.response.send_message(
-                "❌ Pterodactyl API is not configured!", ephemeral=True
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        success = await self.send_power_action("restart")
-
-        if success:
-            await interaction.followup.send(
-                "🔄 Server restart initiated! I'll be back soon!", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                "❌ Failed to restart the server. Please check the logs.",
-                ephemeral=True,
-            )
-
     async def get_server_resources(self) -> dict:
         """Fetch server resource usage from Pterodactyl"""
         headers = {
@@ -126,14 +88,6 @@ class BotStats(commands.Cog):
                 if response.status == 200:
                     return await response.json()
                 return None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != 1086344307574837309:
-            await interaction.response.send_message(
-                "Only the bot owner can use this command.", ephemeral=True
-            )
-            return False
-        return True
 
 
 def setup(bot):
