@@ -21,7 +21,7 @@ from cogs.duplicate_message_detector import DuplicateMessageDetector
 from cogs.scam_detection import ScamDetection
 from utils.rate_limiter import RateLimiter
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.logging_formatter import DetailedFormatter
 
 # Load environment variables from .env file
