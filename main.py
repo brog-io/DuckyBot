@@ -19,6 +19,7 @@ from cogs.information_message import InformationMessage
 from cogs.link_cleaner import LinkCleaner
 from cogs.duplicate_message_detector import DuplicateMessageDetector
 from cogs.scam_detection import ScamDetection
+from cogs.pin_board import Starboard
 from utils.rate_limiter import RateLimiter
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
@@ -127,6 +128,7 @@ class EnteBot(commands.Bot):
                 LinkCleaner(self),
                 DuplicateMessageDetector(self),
                 ScamDetection(self),
+                Starboard(self),
             ]
 
             for cog in cogs:
