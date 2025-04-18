@@ -1,23 +1,38 @@
+import json
 import discord
 from discord.ext import commands
-import json
 
 CONFIG_FILE = "config.json"
+STARRED_MESSAGES_FILE = "starred_messages.json"
 
-# Load config
 with open(CONFIG_FILE, "r") as f:
     config = json.load(f)
+
+
+# Load starred messages from file
+def load_starred_messages():
+    try:
+        with open(STARRED_MESSAGES_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+# Save starred messages to file
+def save_starred_messages(starred_messages):
+    with open(STARRED_MESSAGES_FILE, "w") as f:
+        json.dump(starred_messages, f)
 
 
 class Starboard(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.star_threshold = 1  # Minimum reactions required
-        self.star_emoji = "💚"
+        self.star_threshold = 2  # Minimum reactions required
+        self.star_emoji = "⭐"  # Emoji used for starring
         self.starboard_channel_id = config.get("starboard_channel_id")
         if not self.starboard_channel_id:
             raise ValueError("starboard_channel_id must be set in config.json")
-        self.starred_messages = {}  # Stores starred messages
+        self.starred_messages = load_starred_messages()
 
     async def update_starboard(self, message):
         guild = message.guild
@@ -48,12 +63,14 @@ class Starboard(commands.Cog):
             except discord.NotFound:
                 # If the starred message was deleted, remove it from starred messages
                 del self.starred_messages[message.id]
+                save_starred_messages(self.starred_messages)
                 return
 
             # If star count is zero, delete the starboard message
             if star_count < self.star_threshold:
                 await starred_message.delete()
                 del self.starred_messages[message.id]
+                save_starred_messages(self.starred_messages)
                 return
 
             # Update the embed
@@ -66,6 +83,7 @@ class Starboard(commands.Cog):
                 view = self.create_view(message)
                 starred_message = await starboard_channel.send(embed=embed, view=view)
                 self.starred_messages[message.id] = starred_message.id
+                save_starred_messages(self.starred_messages)
 
     def create_embed(self, message, star_count):
         embed = discord.Embed(
