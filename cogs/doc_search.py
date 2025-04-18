@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import aiohttp
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -62,9 +63,22 @@ class DocSearch(commands.Cog):
 
                 if data.get("success"):
                     answer = data.get("answer", "No answer returned.")
-                    await interaction.followup.send(
-                        f"**Query:** {query}\n**Answer:** {answer}", ephemeral=True
-                    )
+
+                    urls = re.findall(r"https?://\S+", answer)
+
+                    if urls:
+                        button = discord.ui.Button(label="Open Link", url=urls[0])
+                        view = discord.ui.View()
+                        view.add_item(button)
+                        await interaction.followup.send(
+                            f"**Query:** {query}\n**Answer:** {answer}",
+                            ephemeral=True,
+                            view=view,
+                        )
+                    else:
+                        await interaction.followup.send(
+                            f"**Query:** {query}\n**Answer:** {answer}", ephemeral=True
+                        )
                 else:
                     await interaction.followup.send(
                         "API returned success: false or unknown format.", ephemeral=True
