@@ -71,14 +71,12 @@ class DocSearch(commands.Cog):
                         view = discord.ui.View()
                         view.add_item(button)
                         await interaction.followup.send(
-                            f"**Query:** {query}\n**Answer:** {answer}",
+                            f"{answer}",
                             ephemeral=True,
                             view=view,
                         )
                     else:
-                        await interaction.followup.send(
-                            f"**Query:** {query}\n**Answer:** {answer}", ephemeral=True
-                        )
+                        await interaction.followup.send(f"{answer}", ephemeral=True)
                 else:
                     await interaction.followup.send(
                         "API returned success: false or unknown format.", ephemeral=True
