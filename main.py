@@ -24,6 +24,7 @@ from utils.rate_limiter import RateLimiter
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from utils.logging_formatter import DetailedFormatter
+from cogs.doc_search import DocSearch
 
 # Load environment variables from .env file
 load_dotenv()
@@ -129,6 +130,7 @@ class EnteBot(commands.Bot):
                 DuplicateMessageDetector(self),
                 ScamDetection(self),
                 Starboard(self),
+                DocSearch(self),
             ]
 
             for cog in cogs:
