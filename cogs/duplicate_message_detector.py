@@ -15,7 +15,7 @@ class DuplicateMessageDetector(commands.Cog):
         "log_channel_id": None,
         "role_whitelist": [],
     }
-    CLEANUP_INTERVAL = 300  # 5 minutes
+    CLEANUP_INTERVAL = 120  # 2 minutes
 
     def __init__(self, bot: commands.Bot):
         """Initialize the duplicate message detector.
