@@ -1,5 +1,6 @@
 # Config file
 config.json
+starred_messages.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
