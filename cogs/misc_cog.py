@@ -23,29 +23,33 @@ class Misc(commands.Cog):
                 "*Quack* <:lilducky:1069841394929238106>", mention_author=False
             )
 
-    @app_commands.command(
-        name="tip", description="Get a random helpful tip from Ente's documentation."
-    )
+    @app_commands.command(name="tip", description="Get a random helpful tip from Ente.")
     async def tip(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
-        await self.send_tip(interaction)
 
-    async def send_tip(self, interaction: discord.Interaction):
-        prompt = "Give the user a helpful, concise tip from Ente's documentation or feature set."
-
-        payload = {"query": prompt, "key": API_KEY}
+        payload = {"key": API_KEY}
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.poggers.win/api/ente/docs-search", json=payload
+                "https://api.poggers.win/api/ente/tip", json=payload
             ) as resp:
                 if resp.status != 200:
-                    await interaction.followup.send("API error.", ephemeral=True)
+                    await interaction.followup.send(
+                        "Failed to fetch a tip.", ephemeral=True
+                    )
                     return
 
                 data = await resp.json()
-                tip = data.get("answer", "No tip found.")
-                await interaction.followup.send(tip, ephemeral=True)
+                tip = data.get("tip", "No tip found.")
+                url = data.get("documentationUrl")
+
+                if url:
+                    button = discord.ui.Button(label="View Documentation", url=url)
+                    view = discord.ui.View()
+                    view.add_item(button)
+                    await interaction.followup.send(tip, ephemeral=True, view=view)
+                else:
+                    await interaction.followup.send(tip, ephemeral=True)
 
 
 async def setup(bot):
