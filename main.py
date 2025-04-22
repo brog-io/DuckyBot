@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from utils.logging_formatter import DetailedFormatter
 from cogs.doc_search import DocSearch
 from cogs.self_help import SelfHelp
+from cogs.misc_cog import Misc
 
 # Load environment variables from .env file
 load_dotenv()
@@ -133,6 +134,7 @@ class EnteBot(commands.Bot):
                 Starboard(self),
                 DocSearch(self),
                 SelfHelp(self),
+                Misc(self),
             ]
 
             for cog in cogs:
