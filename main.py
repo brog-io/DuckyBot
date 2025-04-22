@@ -25,6 +25,7 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from utils.logging_formatter import DetailedFormatter
 from cogs.doc_search import DocSearch
+from cogs.self_help import SelfHelp
 
 # Load environment variables from .env file
 load_dotenv()
@@ -131,6 +132,7 @@ class EnteBot(commands.Bot):
                 ScamDetection(self),
                 Starboard(self),
                 DocSearch(self),
+                SelfHelp(self),
             ]
 
             for cog in cogs:
