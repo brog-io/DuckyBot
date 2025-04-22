@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 import asyncio
 import time
+from datetime import datetime, timedelta
 
 CONFIG_FILE = "config.json"
 STARRED_MESSAGES_FILE = "starred_messages.json"
@@ -35,30 +36,43 @@ class RateLimiter:
         # Store the last update time for each message
         self.last_update = {}
         self.rate_limit_seconds = rate_limit_seconds
-        self.backoff_multiplier = {}  # Track backoff for each message
+        self.retry_after = {}  # Store when to retry each message
 
     def can_update(self, message_id):
         """Check if we can update this message based on rate limit"""
-        current_time = time.time()
-        last_time = self.last_update.get(message_id, 0)
-        multiplier = self.backoff_multiplier.get(message_id, 1)
+        current_time = datetime.now()
+        message_id = str(message_id)  # Ensure message_id is a string
 
-        # If enough time has passed, allow the update
-        if current_time - last_time >= (self.rate_limit_seconds * multiplier):
+        # Check if we have a specific retry time for this message
+        if message_id in self.retry_after:
+            if current_time < self.retry_after[message_id]:
+                return False
+            else:
+                # Clear the retry time since we're past it
+                del self.retry_after[message_id]
+
+        # Normal rate limit check
+        last_time = self.last_update.get(message_id, datetime.min)
+        if current_time - last_time >= timedelta(seconds=self.rate_limit_seconds):
             self.last_update[message_id] = current_time
-            # Reset backoff on successful update
-            self.backoff_multiplier[message_id] = 1
             return True
         return False
 
-    def apply_backoff(self, message_id):
-        """Apply exponential backoff when rate limited"""
-        current = self.backoff_multiplier.get(message_id, 1)
-        # Increase backoff up to a maximum of 8x
-        self.backoff_multiplier[message_id] = min(current * 2, 8)
-        print(
-            f"Applying backoff for message {message_id}: {self.backoff_multiplier[message_id]}x"
-        )
+    def set_retry_after(self, message_id, seconds):
+        """Set a specific retry time based on Discord's rate limit response"""
+        message_id = str(message_id)  # Ensure message_id is a string
+        self.retry_after[message_id] = datetime.now() + timedelta(seconds=seconds)
+        print(f"Rate limited for message {message_id}, retry after {seconds} seconds")
+
+    def get_next_retry_time(self, message_id):
+        """Get the time remaining until the next retry for a message"""
+        message_id = str(message_id)  # Ensure message_id is a string
+        if message_id in self.retry_after:
+            time_remaining = (
+                self.retry_after[message_id] - datetime.now()
+            ).total_seconds()
+            return max(0, time_remaining)
+        return 0
 
 
 class Starboard(commands.Cog):
@@ -78,45 +92,52 @@ class Starboard(commands.Cog):
         self.pending_updates = set()
         # Task for processing pending updates
         self.update_task = None
+        # Lock for saving to file
+        self.save_lock = asyncio.Lock()
 
     async def process_pending_updates(self):
         """Process any pending updates that were rate limited"""
         try:
             while True:
-                await asyncio.sleep(1.0)  # Check every second (reduced frequency)
+                # If no pending updates, sleep longer
+                if not self.pending_updates:
+                    await asyncio.sleep(3.0)
+                    continue
 
-                # Copy the set to avoid modification during iteration
-                current_pending = self.pending_updates.copy()
-                for message_id in current_pending:
+                # Get the first message that's ready to process
+                next_message = None
+                min_wait_time = float("inf")
+
+                for message_id in list(self.pending_updates):
                     if message_id in self.updating:
-                        continue  # Skip if actively updating
+                        continue
 
-                    if self.rate_limiter.can_update(message_id):
-                        self.pending_updates.remove(message_id)
-                        # Get the guild and channel
-                        for guild in self.bot.guilds:
-                            message_found = False
-                            for channel in guild.text_channels:
-                                try:
-                                    message = await channel.fetch_message(
-                                        int(message_id)
-                                    )
-                                    await self.update_starboard(message)
-                                    message_found = True
-                                    break
-                                except discord.HTTPException as e:
-                                    if e.status == 429:  # Rate limited
-                                        self.rate_limiter.apply_backoff(message_id)
-                                        self.pending_updates.add(
-                                            message_id
-                                        )  # Re-add to pending
-                                        message_found = True  # Break out of the loop
-                                        break
-                                    continue
-                                except (discord.NotFound, discord.Forbidden):
-                                    continue
-                            if message_found:
-                                break
+                    wait_time = self.rate_limiter.get_next_retry_time(message_id)
+                    if wait_time == 0:  # Ready to process now
+                        next_message = message_id
+                        break
+                    elif wait_time < min_wait_time:
+                        min_wait_time = wait_time
+
+                # If we found a message ready to process
+                if next_message:
+                    try:
+                        self.pending_updates.remove(next_message)
+                        await self.process_message_update(next_message)
+                    except Exception as e:
+                        print(f"Error processing message {next_message}: {e}")
+                        # Re-add to pending updates with a small delay
+                        self.rate_limiter.set_retry_after(next_message, 5)
+                        self.pending_updates.add(next_message)
+                else:
+                    # Sleep until the next message is ready
+                    sleep_time = (
+                        min(min_wait_time, 5.0)
+                        if min_wait_time != float("inf")
+                        else 2.0
+                    )
+                    await asyncio.sleep(sleep_time)
+
         except asyncio.CancelledError:
             print("Update task cancelled")
         except Exception as e:
@@ -124,9 +145,79 @@ class Starboard(commands.Cog):
             # Restart the task if it fails
             self.update_task = self.bot.loop.create_task(self.process_pending_updates())
 
+    async def process_message_update(self, message_id):
+        """Process a single message update"""
+        message_id = str(message_id)
+        message = None
+
+        # Try to find the message in all guilds/channels
+        for guild in self.bot.guilds:
+            for channel in guild.text_channels:
+                try:
+                    message = await channel.fetch_message(int(message_id))
+                    break
+                except (discord.NotFound, discord.Forbidden):
+                    continue
+                except discord.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        retry_after = e.retry_after if hasattr(e, "retry_after") else 5
+                        self.rate_limiter.set_retry_after(message_id, retry_after)
+                        self.pending_updates.add(message_id)
+                        return
+                    raise
+            if message:
+                break
+
+        if message:
+            await self.update_starboard(message)
+        else:
+            print(f"Message {message_id} not found in any channel")
+            # Check if this message has a starboard entry and clean it up
+            if message_id in self.starred_messages:
+                await self.cleanup_missing_message(message_id)
+
+    async def cleanup_missing_message(self, message_id):
+        """Clean up starboard entries for messages that no longer exist"""
+        message_id = str(message_id)
+        if message_id not in self.starred_messages:
+            return
+
+        starred_message_id = self.starred_messages[message_id]
+        for guild in self.bot.guilds:
+            starboard_channel = guild.get_channel(self.starboard_channel_id)
+            if starboard_channel:
+                try:
+                    starred_message = await starboard_channel.fetch_message(
+                        int(starred_message_id)
+                    )
+                    await starred_message.delete()
+                    print(
+                        f"Deleted starboard message {starred_message_id} for missing message {message_id}"
+                    )
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+                except discord.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        retry_after = e.retry_after if hasattr(e, "retry_after") else 5
+                        self.rate_limiter.set_retry_after(message_id, retry_after)
+                        self.pending_updates.add(message_id)
+                        return
+
+        # Remove from tracking
+        async with self.save_lock:
+            if message_id in self.starred_messages:
+                del self.starred_messages[message_id]
+                save_starred_messages(self.starred_messages)
+                print(f"Removed {message_id} from starred_messages")
+
     @commands.Cog.listener()
     async def on_ready(self):
         """Start the background task when the bot is ready"""
+        print(f"Starboard is ready! Connected to {len(self.bot.guilds)} guilds.")
+        # Load all current starred messages into pending updates to verify their existence
+        for message_id in self.starred_messages.keys():
+            self.pending_updates.add(message_id)
+
         self.update_task = self.bot.loop.create_task(self.process_pending_updates())
 
     async def update_starboard(self, message):
@@ -174,16 +265,7 @@ class Starboard(commands.Cog):
                 print(f"Error: Message {message.id} not found.")
                 # If message was deleted, also delete from starboard if it exists
                 if message_id_str in self.starred_messages:
-                    try:
-                        starred_message_id = self.starred_messages[message_id_str]
-                        starred_message = await starboard_channel.fetch_message(
-                            int(starred_message_id)
-                        )
-                        await starred_message.delete()
-                        del self.starred_messages[message_id_str]
-                        save_starred_messages(self.starred_messages)
-                    except Exception as e:
-                        print(f"Error cleaning up deleted message: {e}")
+                    await self.cleanup_missing_message(message_id_str)
                 return
             except discord.Forbidden:
                 print(
@@ -192,8 +274,8 @@ class Starboard(commands.Cog):
                 return
             except discord.HTTPException as e:
                 if e.status == 429:  # Rate limited
-                    print(f"Rate limited when fetching message {message.id}")
-                    self.rate_limiter.apply_backoff(message_id_str)
+                    retry_after = e.retry_after if hasattr(e, "retry_after") else 5
+                    self.rate_limiter.set_retry_after(message_id_str, retry_after)
                     self.pending_updates.add(message_id_str)
                     return
                 raise  # Re-raise other HTTP exceptions
@@ -219,8 +301,10 @@ class Starboard(commands.Cog):
                         f"Starboard message {starred_message_id} not found. Deleting entry from starred_messages."
                     )
                     # Remove from tracking since we couldn't find it
-                    del self.starred_messages[message_id_str]
-                    save_starred_messages(self.starred_messages)
+                    async with self.save_lock:
+                        if message_id_str in self.starred_messages:
+                            del self.starred_messages[message_id_str]
+                            save_starred_messages(self.starred_messages)
                     starred_message = None
                 except discord.Forbidden:
                     print(
@@ -229,10 +313,8 @@ class Starboard(commands.Cog):
                     return
                 except discord.HTTPException as e:
                     if e.status == 429:  # Rate limited
-                        print(
-                            f"Rate limited when fetching starboard message {starred_message_id}"
-                        )
-                        self.rate_limiter.apply_backoff(message_id_str)
+                        retry_after = e.retry_after if hasattr(e, "retry_after") else 5
+                        self.rate_limiter.set_retry_after(message_id_str, retry_after)
                         self.pending_updates.add(message_id_str)
                         return
                     raise  # Re-raise other HTTP exceptions
@@ -246,14 +328,18 @@ class Starboard(commands.Cog):
                     )
                     try:
                         await starred_message.delete()
-                        del self.starred_messages[message_id_str]
-                        save_starred_messages(self.starred_messages)
+                        async with self.save_lock:
+                            if message_id_str in self.starred_messages:
+                                del self.starred_messages[message_id_str]
+                                save_starred_messages(self.starred_messages)
                     except discord.HTTPException as e:
                         if e.status == 429:  # Rate limited
-                            print(
-                                f"Rate limited when deleting starboard message {starred_message.id}"
+                            retry_after = (
+                                e.retry_after if hasattr(e, "retry_after") else 5
                             )
-                            self.rate_limiter.apply_backoff(message_id_str)
+                            self.rate_limiter.set_retry_after(
+                                message_id_str, retry_after
+                            )
                             self.pending_updates.add(message_id_str)
                             return
                         print(f"Error deleting starboard message: {e}")
@@ -271,10 +357,12 @@ class Starboard(commands.Cog):
                         )
                     except discord.HTTPException as e:
                         if e.status == 429:  # Rate limited
-                            print(
-                                f"Rate limited when editing starboard message {starred_message.id}"
+                            retry_after = (
+                                e.retry_after if hasattr(e, "retry_after") else 5
                             )
-                            self.rate_limiter.apply_backoff(message_id_str)
+                            self.rate_limiter.set_retry_after(
+                                message_id_str, retry_after
+                            )
                             self.pending_updates.add(message_id_str)
                             return
                         print(f"Error editing starboard message: {e}")
@@ -285,17 +373,22 @@ class Starboard(commands.Cog):
                         starred_message = await starboard_channel.send(
                             embed=embed, view=view
                         )
-                        self.starred_messages[message_id_str] = str(starred_message.id)
-                        save_starred_messages(self.starred_messages)
+                        async with self.save_lock:
+                            self.starred_messages[message_id_str] = str(
+                                starred_message.id
+                            )
+                            save_starred_messages(self.starred_messages)
                         print(
                             f"Created and saved new starboard message: {starred_message.id}"
                         )
                     except discord.HTTPException as e:
                         if e.status == 429:  # Rate limited
-                            print(
-                                f"Rate limited when creating starboard message for {message.id}"
+                            retry_after = (
+                                e.retry_after if hasattr(e, "retry_after") else 5
                             )
-                            self.rate_limiter.apply_backoff(message_id_str)
+                            self.rate_limiter.set_retry_after(
+                                message_id_str, retry_after
+                            )
                             self.pending_updates.add(message_id_str)
                             return
                         print(f"Error creating starboard message: {e}")
@@ -321,6 +414,11 @@ class Starboard(commands.Cog):
 
         if message.attachments:
             embed.set_image(url=message.attachments[0].url)
+
+        # Add footer with timestamp
+        embed.set_footer(
+            text=f"Posted: {message.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         return embed
 
     def create_view(self, message, star_count):
@@ -341,6 +439,7 @@ class Starboard(commands.Cog):
             return
 
         try:
+            # Check if message is in a guild
             guild = self.bot.get_guild(payload.guild_id)
             if not guild:
                 return
@@ -349,14 +448,24 @@ class Starboard(commands.Cog):
             if not channel:
                 return
 
+            message_id = str(payload.message_id)
+
+            # Check rate limit before fetching message
+            if not self.rate_limiter.can_update(message_id):
+                print(
+                    f"Rate limited for message {message_id}, adding to pending updates"
+                )
+                self.pending_updates.add(message_id)
+                return
+
             try:
                 message = await channel.fetch_message(payload.message_id)
                 await self.update_starboard(message)
             except discord.HTTPException as e:
                 if e.status == 429:  # Rate limited
-                    message_id_str = str(payload.message_id)
-                    self.rate_limiter.apply_backoff(message_id_str)
-                    self.pending_updates.add(message_id_str)
+                    retry_after = e.retry_after if hasattr(e, "retry_after") else 5
+                    self.rate_limiter.set_retry_after(message_id, retry_after)
+                    self.pending_updates.add(message_id)
                 else:
                     print(f"Error in on_raw_reaction_add: {e}")
             except (discord.NotFound, discord.Forbidden):
@@ -381,14 +490,24 @@ class Starboard(commands.Cog):
             if not channel:
                 return
 
+            message_id = str(payload.message_id)
+
+            # Check rate limit before fetching message
+            if not self.rate_limiter.can_update(message_id):
+                print(
+                    f"Rate limited for message {message_id}, adding to pending updates"
+                )
+                self.pending_updates.add(message_id)
+                return
+
             try:
                 message = await channel.fetch_message(payload.message_id)
                 await self.update_starboard(message)
             except discord.HTTPException as e:
                 if e.status == 429:  # Rate limited
-                    message_id_str = str(payload.message_id)
-                    self.rate_limiter.apply_backoff(message_id_str)
-                    self.pending_updates.add(message_id_str)
+                    retry_after = e.retry_after if hasattr(e, "retry_after") else 5
+                    self.rate_limiter.set_retry_after(message_id, retry_after)
+                    self.pending_updates.add(message_id)
                 else:
                     print(f"Error in on_raw_reaction_remove: {e}")
             except (discord.NotFound, discord.Forbidden):
