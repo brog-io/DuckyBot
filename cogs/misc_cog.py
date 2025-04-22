@@ -51,6 +51,30 @@ class Misc(commands.Cog):
                 else:
                     await interaction.followup.send(tip, ephemeral=True)
 
+    @app_commands.command(name="help", description="List all available commands.")
+    async def help(self, interaction: discord.Interaction):
+        cmds = []
+
+        is_admin = interaction.user.guild_permissions.administrator
+
+        for cmd in self.bot.tree.walk_commands():
+            # Basic hardcoded filter: skip known admin-only commands
+            if not is_admin and cmd.name in [
+                "welcome"
+            ]:  # Add more admin-only commands here
+                continue
+
+            cmds.append(
+                f"**/{cmd.qualified_name}** — {cmd.description or 'No description'}"
+            )
+
+        embed = discord.Embed(
+            title="Available Commands",
+            description="\n".join(cmds) or "No commands available.",
+            color=0xFFCD3F,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 async def setup(bot):
     await bot.add_cog(Misc(bot))
