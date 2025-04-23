@@ -6,3 +6,4 @@ mistralai
 requests
 discord
 matplotlib
+datetime
