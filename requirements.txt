@@ -2,3 +2,5 @@ discord.py==2.4.0  # Main Discord library
 aiohttp==3.11.2    # For asynchronous HTTP requests
 asyncio            # Included in Python's standard library (no need to add)
 python-dotenv==1.0.0  # For environment variables (if using .env files)
+mistralai
+requests==2.31.0
