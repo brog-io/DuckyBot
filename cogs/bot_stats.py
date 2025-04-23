@@ -13,60 +13,44 @@ class BotStats(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.start_time = time.time()
-        self.ptero_api_key = os.getenv("PTERO_API_KEY")
-        self.ptero_url = os.getenv("PTERO_URL")
-        self.server_id = os.getenv("PTERO_SERVER_ID")
+        self.ptero_api_key = os.getenv("PEBBLE_API_KEY")
+        self.ptero_url = os.getenv("PEBBLE_API_URL")
+        self.server_id = os.getenv("PEBBLE_SERVER_ID")
 
     @app_commands.command(
         name="stats", description="Check how long I've been waddling around! 🦆"
     )
     async def stats_slash(self, interaction: discord.Interaction):
-        """Check the bot's uptime, ping, and server resources with a slash command."""
+        """Check the bot's uptime, ping, and server resources."""
         current_time = time.time()
         uptime_seconds = current_time - self.start_time
         uptime_str = str(datetime.timedelta(seconds=round(uptime_seconds)))
         latency = round(self.bot.latency * 1000)
 
         embed = discord.Embed(title="🦆 Ducky's Stats", color=0xFFCD3F)
-        embed.add_field(
-            name="Bot Uptime",
-            value=f"I've been swimming around for {uptime_str}! 🏊‍♂️",
-            inline=False,
-        )
-        embed.add_field(
-            name="Duck Speed",
-            value=f"Quack! My response time is {latency}ms 🏃‍♂️",
-            inline=False,
-        )
+        embed.add_field(name="Bot Uptime", value=f"{uptime_str}", inline=False)
+        embed.add_field(name="Ping", value=f"{latency}ms", inline=False)
 
-        # Add server resource information if available
+        # Get PebbleHost server resources
         if self.ptero_api_key and self.ptero_url and self.server_id:
             resources = await self.get_server_resources()
             if resources and "attributes" in resources:
-                attrs = resources["attributes"]
+                attrs = resources["attributes"]["resources"]
 
-                # Memory and CPU
-                memory_used = round(
-                    attrs.get("resources", {}).get("memory_bytes", 0) / 1024 / 1024, 2
-                )
-                cpu_usage = attrs.get("resources", {}).get("cpu_absolute", 0)
-
-                # Network stats (convert to KB)
-                network_rx = round(
-                    attrs.get("resources", {}).get("network_rx_bytes", 0) / 1024, 2
-                )
-                network_tx = round(
-                    attrs.get("resources", {}).get("network_tx_bytes", 0) / 1024, 2
-                )
+                memory = round(attrs.get("memory_bytes", 0) / 1024 / 1024, 2)
+                cpu = round(attrs.get("cpu_absolute", 0), 2)
+                disk = round(attrs.get("disk_bytes", 0) / 1024 / 1024 / 1024, 2)
+                net_rx = round(attrs.get("network_rx_bytes", 0) / 1024, 2)
+                net_tx = round(attrs.get("network_tx_bytes", 0) / 1024, 2)
 
                 embed.add_field(
                     name="Server Resources",
-                    value=f"Memory: {memory_used}MB\nCPU: {cpu_usage}%",
+                    value=f"Memory: {memory}MB\nCPU: {cpu}%\nDisk: {disk}GB",
                     inline=True,
                 )
                 embed.add_field(
-                    name="Network Usage",
-                    value=f"↓ {network_rx}KB\n↑ {network_tx}KB",
+                    name="Network",
+                    value=f"↓ {net_rx}KB\n↑ {net_tx}KB",
                     inline=True,
                 )
 
@@ -74,20 +58,18 @@ class BotStats(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     async def get_server_resources(self) -> dict:
-        """Fetch server resource usage from Pterodactyl"""
         headers = {
             "Authorization": f"Bearer {self.ptero_api_key}",
             "Accept": "application/json",
         }
 
+        url = f"{self.ptero_url}/api/client/servers/{self.server_id}/resources"
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{self.ptero_url}/api/client/servers/{self.server_id}/resources",
-                headers=headers,
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                return None
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                else:
+                    return None
 
 
 def setup(bot):
