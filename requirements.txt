@@ -6,4 +6,4 @@ mistralai
 requests
 discord
 matplotlib
-datetime
+openai
