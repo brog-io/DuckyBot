@@ -35,7 +35,7 @@ async def check_scam_with_openai(message: str) -> bool:
         )
 
         response = await openai_client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4.1-nano",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message},
