@@ -27,6 +27,7 @@ from utils.logging_formatter import DetailedFormatter
 from cogs.doc_search import DocSearch
 from cogs.self_help import SelfHelp
 from cogs.misc_cog import Misc
+from cogs.blog_summarizer import Summarizer
 
 # Load environment variables from .env file
 load_dotenv()
@@ -135,6 +136,7 @@ class EnteBot(commands.Bot):
                 DocSearch(self),
                 SelfHelp(self),
                 Misc(self),
+                Summarizer(self),
             ]
 
             for cog in cogs:
