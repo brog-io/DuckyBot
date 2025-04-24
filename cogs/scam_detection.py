@@ -26,24 +26,32 @@ whitelisted_role_ids = config["role_whitelist"]
 
 logger = logging.getLogger(__name__)
 
-
 async def check_scam_with_openai(message: str) -> bool:
     try:
         system_prompt = (
-            "You are a security expert. Determine if the following message is a scam or phishing attempt. "
-            "Respond only with 'Yes' if it is a scam, or 'No' if it is not."
+            "You are a Discord bot designed to detect scam messages. You will be given a message and must determine if it is a scam. "
+            'Return a JSON object with the following format: {"is_scam": <boolean>}. The value should be true if the message is likely a scam and false if it is not.\n\n'
+            "Here are some examples of scam characteristics to look for (but are not limited to):\n\n"
+            "-   Promises of unrealistic financial gains: Claims of earning large sums of money in short periods (e.g., $100k in a week) are highly suspicious.\n"
+            "-   Requests for upfront payment or a percentage of profits: Asking for reimbursement or a cut of future earnings is a common scam tactic.\n"
+            "-   Requests to contact via external platforms: Directing users to Telegram, WhatsApp, or other messaging apps is a red flag, especially when combined with other suspicious claims.\n"
+            "-   Generic or vague language: Scammers often use general terms like 'crypto market,' 'online business,' or 'trading' without providing specific details.\n"
+            "-   Targeted recruitment with selective criteria: Messages like 'I'll teach 10 people...' aims to create a sense of urgency and exclusivity.\n"
+            "-   Use of URLs that lead to other Discord channels or outside websites for further communication: This is an attempt by the scammers to get the victim off Discord's chat filter or get the Discord token by impersonating the external website.\n\n"
+            "Consider all these factors carefully and provide the most accurate assessment possible. DO NOT provide additional context or explanation, only the JSON object."
         )
-
+        
         response = await openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message},
             ],
+            response_format={"type": "json_object"}
         )
-
-        answer = response.choices[0].message.content.strip().lower()
-        is_scam = answer.startswith("yes")
+        content = response.choices[0].message.content.strip()
+        result = json.loads(content)
+        is_scam = bool(result.get("is_scam", False))
         return is_scam
     except Exception as e:
         logger.error(f"OpenAI scam detection error: {e}")
