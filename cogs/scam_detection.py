@@ -23,8 +23,10 @@ with open(config_file) as f:
 
 log_channel_id = config["log_channel_id"]
 whitelisted_role_ids = config["role_whitelist"]
+allowed_category_ids = config.get("allowed_category_ids", [])
 
 logger = logging.getLogger(__name__)
+
 
 async def check_scam_with_openai(message: str) -> bool:
     try:
@@ -40,14 +42,14 @@ async def check_scam_with_openai(message: str) -> bool:
             "-   Use of URLs that lead to other Discord channels or outside websites for further communication: This is an attempt by the scammers to get the victim off Discord's chat filter or get the Discord token by impersonating the external website.\n\n"
             "Consider all these factors carefully and provide the most accurate assessment possible. DO NOT provide additional context or explanation, only the JSON object."
         )
-        
+
         response = await openai_client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message},
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content.strip()
         result = json.loads(content)
@@ -111,10 +113,18 @@ class ScamDetection(commands.Cog):
         self.cooldowns = commands.CooldownMapping.from_cooldown(
             3, 60, commands.BucketType.user
         )
+        self.allowed_category_ids = allowed_category_ids
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.author.bot or not message.guild:
+            return
+
+        # Check allowed category
+        if (
+            not message.channel.category
+            or message.channel.category.id not in self.allowed_category_ids
+        ):
             return
 
         bucket = self.cooldowns.get_bucket(message)
@@ -140,10 +150,6 @@ class ScamDetection(commands.Cog):
                 )
                 view = ModerationButtons(message, message.author)
                 await log_channel.send(embed=embed, view=view)
-
-    @commands.command()
-    async def start(self, ctx):
-        await ctx.send("PhishHook Scam Detection is running.")
 
 
 def setup(bot):
