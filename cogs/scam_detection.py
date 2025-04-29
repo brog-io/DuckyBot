@@ -110,8 +110,11 @@ class ModerationButtons(View):
 class ScamDetection(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # cache up to 1024 entries, expire after 5 minutes
+        self._scam_cache = TTLCache(maxsize=1024, ttl=300)
+        # original cooldown, adjust scope elsewhere if desired
         self.cooldowns = commands.CooldownMapping.from_cooldown(
-            3, 60, commands.BucketType.user
+            3, 60, commands.BucketType.channel
         )
         self.allowed_category_ids = allowed_category_ids
 
@@ -120,36 +123,55 @@ class ScamDetection(commands.Cog):
         if message.author == self.bot.user or message.author.bot or not message.guild:
             return
 
-        # Check allowed category
+        # restrict to configured categories
         if (
             not message.channel.category
             or message.channel.category.id not in self.allowed_category_ids
         ):
             return
 
+        # account age filter: skip if older than 2 years
+        account_age = datetime.now(timezone.utc) - message.author.created_at
+        if account_age >= timedelta(days=2 * 365):
+            return
+
+        # skip messages that are too short to be scams
+        if len(message.content) < 30:
+            return
+
         bucket = self.cooldowns.get_bucket(message)
         if bucket.update_rate_limit():
             return
 
+        # role whitelist
         author_roles = [role.id for role in message.author.roles]
         if any(role_id in whitelisted_role_ids for role_id in author_roles):
             return
 
-        is_scam = await check_scam_with_openai(message.content)
+        # consult cache
+        content = message.content.strip()
+        if content in self._scam_cache:
+            is_scam = self._scam_cache[content]
+        else:
+            is_scam = await check_scam_with_openai(content)
+            self._scam_cache[content] = is_scam
 
-        if is_scam:
-            log_channel = self.bot.get_channel(log_channel_id)
-            if log_channel:
-                embed = discord.Embed(
-                    title="🚨 Scam Message Detected",
-                    description=f"From {message.author.mention} in {message.channel.mention}:\n\n{message.content}",
-                    color=discord.Color.red(),
-                )
-                embed.set_footer(
-                    text=f"User ID: {message.author.id} | Message ID: {message.id}"
-                )
-                view = ModerationButtons(message, message.author)
-                await log_channel.send(embed=embed, view=view)
+        if not is_scam:
+            return
+
+        # log and present moderation buttons
+        log_channel = self.bot.get_channel(log_channel_id)
+        if log_channel:
+            embed = discord.Embed(
+                title="🚨 Scam Message Detected",
+                description=f"From {message.author.mention} in {message.channel.mention}:\n\n{message.content}",
+                color=discord.Color.red(),
+            )
+            embed.set_footer(
+                text=f"User ID: {message.author.id} | Message ID: {message.id}"
+            )
+            view = ModerationButtons(message, message.author)
+            await log_channel.send(embed=embed, view=view)
 
 
 def setup(bot):
