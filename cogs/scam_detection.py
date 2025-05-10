@@ -127,7 +127,7 @@ class ScamDetection(commands.Cog):
             return
 
         account_age = datetime.now(timezone.utc) - message.author.created_at
-        if account_age >= timedelta(days=2 * 365):
+        if account_age >= timedelta(days=10 * 365):
             return
 
         if len(message.content) < 30:
