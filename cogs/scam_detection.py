@@ -63,30 +63,27 @@ async def check_scam_with_openai(message: str) -> bool:
 
 
 class ModerationButtons(View):
-    def __init__(self, message, author):
+    def __init__(self, author):
         super().__init__(timeout=None)
-        self.message = message
         self.author = author
-        self.is_deleted = False
 
-        self.add_item(
-            Button(label="View", style=discord.ButtonStyle.link, url=message.jump_url)
-        )
-
-    @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
-    async def delete_button(self, interaction: discord.Interaction, button: Button):
-        if self.is_deleted:
-            await interaction.response.send_message("Already deleted.", ephemeral=True)
+    @discord.ui.button(label="Remove Timeout", style=discord.ButtonStyle.primary)
+    async def remove_timeout(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.moderate_members:
+            await interaction.response.send_message("No permission.", ephemeral=True)
             return
 
-        if interaction.user.guild_permissions.manage_messages:
-            await self.message.delete()
-            self.is_deleted = True
-            await interaction.response.send_message("Message deleted.", ephemeral=True)
-            button.disabled = True
-            await interaction.message.edit(view=self)
-        else:
-            await interaction.response.send_message("No permission.", ephemeral=True)
+        try:
+            await self.author.timeout(
+                None, reason="Timeout manually removed via PhishHook."
+            )
+            await interaction.response.send_message(
+                f"Timeout removed for {self.author.name}.", ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"Failed to remove timeout: {e}", ephemeral=True
+            )
 
     @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary)
     async def kick_user(self, interaction: discord.Interaction, button: Button):
@@ -112,9 +109,7 @@ class ModerationButtons(View):
 class ScamDetection(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # cache up to 1024 entries, expire after 5 minutes
         self._scam_cache = TTLCache(maxsize=1024, ttl=300)
-        # original cooldown, adjust scope elsewhere if desired
         self.cooldowns = commands.CooldownMapping.from_cooldown(
             3, 60, commands.BucketType.channel
         )
@@ -125,19 +120,16 @@ class ScamDetection(commands.Cog):
         if message.author == self.bot.user or message.author.bot or not message.guild:
             return
 
-        # restrict to configured categories
         if (
             not message.channel.category
             or message.channel.category.id not in self.allowed_category_ids
         ):
             return
 
-        # account age filter: skip if older than 2 years
         account_age = datetime.now(timezone.utc) - message.author.created_at
         if account_age >= timedelta(days=2 * 365):
             return
 
-        # skip messages that are too short to be scams
         if len(message.content) < 30:
             return
 
@@ -145,12 +137,10 @@ class ScamDetection(commands.Cog):
         if bucket.update_rate_limit():
             return
 
-        # role whitelist
         author_roles = [role.id for role in message.author.roles]
         if any(role_id in whitelisted_role_ids for role_id in author_roles):
             return
 
-        # consult cache
         content = message.content.strip()
         if content in self._scam_cache:
             is_scam = self._scam_cache[content]
@@ -161,18 +151,28 @@ class ScamDetection(commands.Cog):
         if not is_scam:
             return
 
-        # log and present moderation buttons
+        try:
+            await message.delete()
+        except Exception as e:
+            logger.warning(f"Failed to delete message: {e}")
+
+        try:
+            timeout_until = discord.utils.utcnow() + timedelta(days=1)
+            await message.author.timeout(
+                timeout_until, reason="Scam message detected by PhishHook."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to timeout user: {e}")
+
         log_channel = self.bot.get_channel(log_channel_id)
         if log_channel:
             embed = discord.Embed(
-                title="🚨 Scam Message Detected",
-                description=f"From {message.author.mention} in {message.channel.mention}:\n\n{message.content}",
+                title="🚨 Scam Message Detected & Auto-Deleted",
+                description=f"{message.author.mention} in {message.channel.mention} was **timed out for 1 day**.\n\n**Message content:**\n{content}",
                 color=discord.Color.red(),
             )
-            embed.set_footer(
-                text=f"User ID: {message.author.id} | Message ID: {message.id}"
-            )
-            view = ModerationButtons(message, message.author)
+            embed.set_footer(text=f"User ID: {message.author.id}")
+            view = ModerationButtons(message.author)
             await log_channel.send(embed=embed, view=view)
 
 
