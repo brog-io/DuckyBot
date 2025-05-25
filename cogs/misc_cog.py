@@ -13,6 +13,11 @@ class Misc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @app_commands.command(name="quack", description="How many times to quack")
+    async def quack(self, interaction: discord.Interaction, times: int):
+        times = max(1, min(times, 20))
+        await interaction.response.send_message("quack " * times)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
