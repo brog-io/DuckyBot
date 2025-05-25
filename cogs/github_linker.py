@@ -26,48 +26,20 @@ class LinkGithubButton(ui.View):
 
     @ui.button(label="Link GitHub", style=discord.ButtonStyle.link)
     async def link_button(self, interaction: Interaction, button: ui.Button):
-        pass  # not called for link buttons
+        pass
 
 
 class GithubRolesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # /linkgithub
-    @app_commands.command(
-        description="Link your GitHub account to your Discord securely."
+    role = app_commands.Group(name="role", description="Get GitHub-related roles.")
+
+    @role.command(
+        name="contributor", description="Get the Contributor role for ente-io/ente."
     )
-    async def linkgithub(self, interaction: Interaction):
-        discord_id = str(interaction.user.id)
-        view = LinkGithubButton(discord_id, WORKER_URL)
-        async with aiohttp.ClientSession() as session:
-            async with session.put(
-                f"{WORKER_URL}/api/stateset",
-                json={"state": view.state, "discord_id": discord_id, "ttl": 600},
-            ) as resp:
-                if resp.status != 200:
-                    await interaction.response.send_message(
-                        "Failed to generate a secure link. Try again later.",
-                        ephemeral=True,
-                    )
-                    return
-        link_url = f"{WORKER_URL}/link/github?state={view.state}"
-        button = discord.ui.Button(
-            label="Link GitHub", url=link_url, style=discord.ButtonStyle.link
-        )
-        ephemeral_view = discord.ui.View()
-        ephemeral_view.add_item(button)
-        await interaction.response.send_message(
-            "Click the button below to link your GitHub account. After linking, use `/role` or `/role_starred`.",
-            view=ephemeral_view,
-            ephemeral=True,
-        )
-
-    # /role
-    @app_commands.command(description="Get the Contributor role for ente-io/ente.")
-    async def role(self, interaction: Interaction):
+    async def contributor(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
-
         discord_id = str(interaction.user.id)
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -81,7 +53,6 @@ class GithubRolesCog(commands.Cog):
                     return
                 data = await resp.json()
                 github_username = data.get("github_username")
-
         if not github_username:
             await interaction.followup.send(
                 "You haven't linked your GitHub account yet. Use `/linkgithub` first.",
@@ -116,7 +87,6 @@ class GithubRolesCog(commands.Cog):
             if c.get("login")
         )
 
-        # Paginate merged PRs
         is_pr_contributor = False
         page = 1
         max_pages = 10
@@ -170,12 +140,11 @@ class GithubRolesCog(commands.Cog):
                 ephemeral=True,
             )
 
-    # /role_starred
-    @app_commands.command(
-        name="role_starred",
+    @role.command(
+        name="stargazer",
         description="Get the Stargazer role if you have starred ente-io/ente.",
     )
-    async def role_starred(self, interaction: Interaction):
+    async def starred(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         discord_id = str(interaction.user.id)
         async with aiohttp.ClientSession() as session:
@@ -244,6 +213,35 @@ class GithubRolesCog(commands.Cog):
                 ephemeral=True,
             )
 
+    @app_commands.command(
+        description="Link your GitHub account to your Discord securely."
+    )
+    async def linkgithub(self, interaction: Interaction):
+        discord_id = str(interaction.user.id)
+        view = LinkGithubButton(discord_id, WORKER_URL)
+        async with aiohttp.ClientSession() as session:
+            async with session.put(
+                f"{WORKER_URL}/api/stateset",
+                json={"state": view.state, "discord_id": discord_id, "ttl": 600},
+            ) as resp:
+                if resp.status != 200:
+                    await interaction.response.send_message(
+                        "Failed to generate a secure link. Try again later.",
+                        ephemeral=True,
+                    )
+                    return
+        link_url = f"{WORKER_URL}/link/github?state={view.state}"
+        button = discord.ui.Button(
+            label="Link GitHub", url=link_url, style=discord.ButtonStyle.link
+        )
+        ephemeral_view = discord.ui.View()
+        ephemeral_view.add_item(button)
+        await interaction.response.send_message(
+            "Click the button below to link your GitHub account. After linking, use `/role contributor` or `/role starred`.",
+            view=ephemeral_view,
+            ephemeral=True,
+        )
+
 
 async def setup(bot):
-    await bot.add_cog(GitHubLinker(bot))
+    await bot.add_cog(GithubRolesCog(bot))
