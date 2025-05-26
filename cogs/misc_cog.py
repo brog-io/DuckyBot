@@ -16,7 +16,7 @@ class Misc(commands.Cog):
     @app_commands.command(name="quack", description="How many times to quack")
     async def quack(self, interaction: discord.Interaction, times: int):
         times = max(1, min(times, 20))
-        await interaction.response.send_message("quack " * times)
+        await interaction.response.send_message("quack " * times, empheral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
