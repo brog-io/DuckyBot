@@ -209,6 +209,99 @@ class MessageTracker(commands.Cog):
             embed = await self.cog._build_mode_embed(mode or "forever")
             await interaction.response.edit_message(embed=embed, view=self)
 
+    @app_commands.command(
+        name="rank", description="Show your rank and message count in the leaderboards."
+    )
+    @app_commands.describe(user="The user to check the rank for (optional)")
+    async def rank(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User = None,
+    ):
+        user = user or interaction.user
+
+        # Helper for ranking
+        async def get_rank_and_count(mode: str):
+            now = datetime.now(timezone.utc)
+            async with aiosqlite.connect(self.db_path) as db:
+                if mode == "forever":
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                    """
+                    cursor = await db.execute(query)
+                elif mode == "monthly":
+                    start_month = now.replace(
+                        day=1, hour=0, minute=0, second=0, microsecond=0
+                    )
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        WHERE timestamp >= ?
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                    """
+                    cursor = await db.execute(query, (start_month,))
+                elif mode == "weekly":
+                    start_week = now - timedelta(days=now.weekday())
+                    start_week = start_week.replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        WHERE timestamp >= ?
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                    """
+                    cursor = await db.execute(query, (start_week,))
+                else:
+                    return None, 0
+
+                leaderboard = await cursor.fetchall()
+                for i, (user_id, count) in enumerate(leaderboard, start=1):
+                    if user_id == user.id:
+                        return i, count
+                return None, 0
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = discord.Embed(
+            title=f"📊 Rank for {user.display_name}",
+            color=EMBED_COLOR,
+            timestamp=datetime.utcnow(),
+        )
+
+        # All leaderboard types
+        modes = [
+            ("forever", "🏆 All-Time"),
+            ("monthly", "📅 Monthly"),
+            ("weekly", "📆 Weekly"),
+        ]
+
+        for mode, mode_name in modes:
+            rank, count = await get_rank_and_count(mode)
+            if rank:
+                embed.add_field(
+                    name=mode_name,
+                    value=f"Rank: **#{rank}**\nMessages: **{count}**",
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name=mode_name, value="Not ranked (no messages).", inline=False
+                )
+
+        embed.set_footer(text="Rank is recalculated every 10 minutes.")
+
+        try:
+            embed.set_thumbnail(url=user.display_avatar.url)
+        except Exception:
+            pass
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     @tasks.loop(minutes=10)
     async def update_leaderboards(self):
         try:
