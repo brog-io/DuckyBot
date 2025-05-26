@@ -16,7 +16,21 @@ class Misc(commands.Cog):
     @app_commands.command(name="quack", description="How many times to quack")
     async def quack(self, interaction: discord.Interaction, times: int):
         times = max(1, min(times, 50))
-        await interaction.response.send_message("quack " * times, empheral=True)
+
+        # 10% chance to refuse as a joke
+        if random.random() < 0.10:
+            responses = [
+                "Sorry, I'm all out of quacks today.",
+                "Quack limit reached. Try again later.",
+                "The ducks are on strike.",
+                "No quacks for you. 🦆",
+                "Quack error: User too funny.",
+            ]
+            await interaction.response.send_message(
+                random.choice(responses), ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("quack " * times, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -35,7 +49,9 @@ class Misc(commands.Cog):
                 if resp.status == 200:
                     data = await resp.json()
                     image_url = data.get("url")
-                    embed = discord.Embed(title="Quack!", discord.Color(0xFFCD3F)).set_image(url=image_url)
+                    embed = discord.Embed(
+                        title="Quack!", color=discord.Color(0xFFCD3F)
+                    ).set_image(url=image_url)
                     await interaction.response.send_message(embed=embed, ephemeral=True)
                 else:
                     await interaction.response.send_message(
