@@ -30,36 +30,6 @@ class MemberManager(commands.Cog):
                         f"Could not change nickname for {after.name}: Missing permissions"
                     )
 
-    @staticmethod
-    def is_unicode_country_flag(emoji: str) -> bool:
-        return (
-            isinstance(emoji, str)
-            and len(emoji) == 2
-            and all(0x1F1E6 <= ord(char) <= 0x1F1FF for char in emoji)
-        )
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot:
-            return
-
-        emoji = reaction.emoji
-        # Block Unicode flags
-        if self.is_unicode_country_flag(emoji):
-            try:
-                await reaction.remove(user)
-            except Exception as e:
-                print(f"Failed to remove unicode flag reaction: {e}")
-            return
-
-        # Block custom emojis with "flag" in the name
-        if isinstance(emoji, (discord.Emoji, discord.PartialEmoji)):
-            if "flag" in emoji.name.lower():
-                try:
-                    await reaction.remove(user)
-                except Exception as e:
-                    print(f"Failed to remove custom flag reaction: {e}")
-
     @commands.Cog.listener()
     async def on_member_join(self, member):
         welcome_channel_id = int(self.bot.config.get("welcome_channel_id", 0))
