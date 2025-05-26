@@ -269,7 +269,7 @@ class MessageTracker(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         embed = discord.Embed(
             title=f"📊 Rank for {user.display_name}",
-            color=EMBED_COLOR,
+            color=0xFFCD3F,
             timestamp=datetime.utcnow(),
         )
 
