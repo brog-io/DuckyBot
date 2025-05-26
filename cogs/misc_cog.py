@@ -27,11 +27,9 @@ class Misc(commands.Cog):
                 "No quacks for you. 🦆",
                 "Quack error: User too funny.",
             ]
-            await interaction.response.send_message(
-                random.choice(responses), ephemeral=True
-            )
+            await interaction.response.send_message(random.choice(responses))
         else:
-            await interaction.response.send_message("quack " * times, ephemeral=True)
+            await interaction.response.send_message("quack " * times)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
