@@ -2,13 +2,13 @@ import discord
 from discord.ext import commands
 import aiohttp
 import os
+import asyncio
 from discord import ui
 from dotenv import load_dotenv
 
 load_dotenv()
 API_KEY = os.getenv("POGGERS_API_KEY")
 
-# CONFIG
 SELFHELP_CHANNEL_IDS = [1364139133794123807]
 SUPPORT_ROLE_ID = 1364141260708909117
 SOLVED_TAG_ID = 1364276749826920538
@@ -26,21 +26,14 @@ class SupportView(ui.View):
         self.thread_owner = thread_owner
 
     def is_authorized(self, user: discord.Member) -> bool:
-        """Check if user is thread owner or has mod permissions"""
-        # Check if user is thread owner
         if user.id == self.thread_owner:
             return True
-
-        # Check if user has manage_threads permission
         if isinstance(user, discord.Member) and user.guild_permissions.manage_threads:
             return True
-
-        # Check if user has any mod roles
         if isinstance(user, discord.Member):
             for role in user.roles:
                 if role.id in MOD_ROLE_IDS:
                     return True
-
         return False
 
     @ui.button(
@@ -55,7 +48,6 @@ class SupportView(ui.View):
                 ephemeral=True,
             )
             return
-
         await interaction.response.send_message(
             f"<@&{SUPPORT_ROLE_ID}> User still needs help in {interaction.channel.mention}",
             ephemeral=False,
@@ -83,51 +75,42 @@ class SupportView(ui.View):
             )
             return
 
-        # Important: Respond to the interaction first, BEFORE archiving the thread
         await interaction.response.send_message(
             "Thread marked as solved and closed.", ephemeral=False
         )
 
         try:
             if isinstance(thread.parent, discord.ForumChannel):
-                # Get the current applied tags properly
                 current_tags = list(thread.applied_tags) if thread.applied_tags else []
-
-                # Get the tag object instead of using the ID directly
                 forum_channel = thread.parent
                 solved_tag = None
                 for tag in forum_channel.available_tags:
                     if tag.id == SOLVED_TAG_ID:
                         solved_tag = tag
                         break
-
-                # Only add the solved tag if we found it and it's not already applied
                 if solved_tag and solved_tag not in current_tags:
                     current_tags.append(solved_tag)
-
-                # Archive the thread AFTER responding to the interaction
                 await thread.edit(
                     archived=True,
                     locked=True,
                     applied_tags=current_tags,
                 )
             else:
-                # Archive the thread AFTER responding to the interaction
                 await thread.edit(
                     archived=True,
                     locked=True,
                 )
         except Exception as e:
-            # We've already responded to the interaction, so we need to send a new message
             await thread.send(f"Error while closing thread: {e}")
 
 
 class SelfHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        bot.add_view(
-            SupportView(thread_owner=0)
-        )  # Register persistent view on cog load
+        bot.add_view(SupportView(thread_owner=0))  # persistent view
+
+        # Keep track of already processed threads to avoid double-responses
+        self.processed_threads = set()
 
     async def query_api(self, query: str, extra: str = "") -> str:
         payload = {
@@ -147,19 +130,28 @@ class SelfHelp(commands.Cog):
                     else "Sorry, I couldn't find an answer."
                 )
 
-    @commands.Cog.listener()
-    async def on_thread_create(self, thread: discord.Thread):
-        if thread.parent_id not in SELFHELP_CHANNEL_IDS:
-            return
+    async def process_forum_thread(
+        self, thread: discord.Thread, initial_message: discord.Message = None
+    ):
+        """Processes a thread: calls API and sends support view if not done already."""
+        if thread.id in self.processed_threads:
+            return  # Already processed
+        self.processed_threads.add(thread.id)
 
         await thread.send("Analyzing your question, please wait...")
 
+        # Gather context
         body = ""
-        try:
-            first_message = await thread.fetch_message(thread.id)
-            body = first_message.content
-        except:
-            pass
+        if initial_message:
+            body = initial_message.content
+        else:
+            # Try to get the starter message if not provided
+            try:
+                async for msg in thread.history(limit=1, oldest_first=True):
+                    body = msg.content
+                    break
+            except Exception as e:
+                print(f"Failed to fetch first message: {e}")
 
         tag_names = []
         if isinstance(thread.parent, discord.ForumChannel):
@@ -169,7 +161,7 @@ class SelfHelp(commands.Cog):
                 for t in thread.applied_tags or []
             ]
 
-        query = thread.name
+        query = thread.name or body
         context = (
             f"{body}\nTags: {', '.join(filter(None, tag_names))}"
             if body or tag_names
@@ -185,7 +177,24 @@ class SelfHelp(commands.Cog):
                 break
 
     @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        if thread.parent_id not in SELFHELP_CHANNEL_IDS:
+            return
+        await asyncio.sleep(1)  # Correct fix for waiting a bit for thread to populate
+        await self.process_forum_thread(thread)
+
+    @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Catch thread starter messages in forums as backup
+        if (
+            isinstance(message.channel, discord.Thread)
+            and message.channel.parent_id in SELFHELP_CHANNEL_IDS
+            and message.channel.owner_id == message.author.id
+            and message.id == message.channel.id
+        ):
+            await self.process_forum_thread(message.channel, initial_message=message)
+
+        # Optional: Prevent answering every message in selfhelp (don't auto-answer replies)
         if message.author.bot:
             return
         if message.channel.id in SELFHELP_CHANNEL_IDS:
@@ -200,7 +209,11 @@ class SelfHelp(commands.Cog):
         if not channel:
             return
 
-        message = await channel.fetch_message(payload.message_id)
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            return
+
         if message.author.bot:
             return
 
@@ -212,12 +225,10 @@ class SelfHelp(commands.Cog):
             payload.user_id
         )
 
-        # Send a notification message showing who created the thread
         await thread.send(
             f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
         )
 
-        # Process the query
         answer = await self.query_api(message.content)
         await thread.send(answer, view=SupportView(thread_owner=payload.user_id))
 
