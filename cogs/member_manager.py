@@ -15,27 +15,6 @@ class MemberManager(commands.Cog):
     def remove_flags_from_name(self, name: str) -> str:
         return self.flag_pattern.sub("", name).strip()
 
-    @staticmethod
-    def is_country_flag(emoji: str) -> bool:
-        return len(emoji) == 2 and all(
-            0x1F1E6 <= ord(char) <= 0x1F1FF for char in emoji
-        )
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot:
-            return
-
-        emoji = str(reaction.emoji)
-        if self.is_country_flag(emoji):
-            try:
-                await reaction.remove(user)
-                print(f"Blocked flag reaction {emoji} from {user}")
-            except discord.Forbidden:
-                print("Missing permissions to remove reactions.")
-            except discord.HTTPException:
-                print("Failed to remove reaction.")
-
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
         if before.display_name != after.display_name:
@@ -50,6 +29,31 @@ class MemberManager(commands.Cog):
                     logger.warning(
                         f"Could not change nickname for {after.name}: Missing permissions"
                     )
+
+    @staticmethod
+    def is_country_flag(emoji: str) -> bool:
+        # Unicode flags are made of two "regional indicator symbols"
+        return len(emoji) == 2 and all(
+            0x1F1E6 <= ord(char) <= 0x1F1FF for char in emoji
+        )
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        print(
+            f"Reaction added: emoji={reaction.emoji!r}, type={type(reaction.emoji)}, by={user}"
+        )
+        if user.bot:
+            return
+
+        emoji = str(reaction.emoji)
+        if self.is_country_flag(emoji):
+            try:
+                await reaction.remove(user)
+                print(f"Blocked flag reaction {emoji} from {user}")
+            except discord.Forbidden:
+                print("Missing permissions to remove reactions.")
+            except discord.HTTPException as e:
+                print(f"Failed to remove reaction: {e}")
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
