@@ -6,7 +6,6 @@ import json
 from datetime import datetime, timezone, timedelta
 
 LEADERBOARD_CHANNEL_ID = 953689741432340540
-EMBED_COLOR = "0xFFCD3F"
 
 
 class MessageTracker(commands.Cog):
@@ -132,7 +131,7 @@ class MessageTracker(commands.Cog):
 
         embed = discord.Embed(
             title=titles.get(mode, "Leaderboard"),
-            color=EMBED_COLOR,
+            color=0xFFCD3F,
             timestamp=datetime.utcnow(),
         )
 
