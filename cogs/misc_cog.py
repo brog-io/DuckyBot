@@ -15,7 +15,7 @@ class Misc(commands.Cog):
 
     @app_commands.command(name="quack", description="How many times to quack")
     async def quack(self, interaction: discord.Interaction, times: int):
-        times = max(1, min(times, 20))
+        times = max(1, min(times, 50))
         await interaction.response.send_message("quack " * times, empheral=True)
 
     @commands.Cog.listener()
@@ -27,6 +27,21 @@ class Misc(commands.Cog):
             await message.reply(
                 "*Quack* <:lilducky:1069841394929238106>", mention_author=False
             )
+
+    @app_commands.command(name="duck", description="Get a random duck image")
+    async def duck(self, interaction: discord.Interaction):
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://random-d.uk/api/v2/quack") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    image_url = data.get("url")
+                    embed = discord.Embed(title="Quack!", discord.Color(0xFFCD3F)).set_image(url=image_url)
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(
+                        "Couldn't fetch a duck image right now. Try again later.",
+                        ephemeral=True,
+                    )
 
     @app_commands.command(name="tip", description="Get a random helpful tip from Ente.")
     async def tip(self, interaction: discord.Interaction):
