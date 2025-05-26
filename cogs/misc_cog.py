@@ -16,7 +16,7 @@ class Misc(commands.Cog):
 
     @app_commands.command(name="quack", description="How many times to quack")
     async def quack(self, interaction: discord.Interaction, times: int):
-        times = max(1, min(times, 50))
+        times = max(1, min(times, 100))
 
         # 10% chance to refuse as a joke
         if random.random() < 0.10:
@@ -51,7 +51,7 @@ class Misc(commands.Cog):
                     embed = discord.Embed(
                         title="Quack!", color=discord.Color(0xFFCD3F)
                     ).set_image(url=image_url)
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.response.send_message(embed=embed)
                 else:
                     await interaction.response.send_message(
                         "Couldn't fetch a duck image right now. Try again later.",
