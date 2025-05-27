@@ -169,7 +169,8 @@ class MessageTracker(commands.Cog):
 
     class LeaderboardView(discord.ui.View):
         def __init__(self, cog):
-            super().__init__(timeout=None)
+            # Timeout is 5 minutes; change if you want longer
+            super().__init__(timeout=300)
             self.cog = cog
 
         @discord.ui.select(
@@ -188,33 +189,43 @@ class MessageTracker(commands.Cog):
         ):
             mode = select.values[0]
             embed = await self.cog._build_mode_embed(mode)
-            await interaction.response.edit_message(embed=embed, view=self)
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except discord.errors.NotFound:
+                await interaction.followup.send(
+                    content="⚠️ This leaderboard view expired. Please use `/leaderboard` again.",
+                    ephemeral=True,
+                )
 
-    @discord.ui.button(
-        label="🔄 Refresh",
-        style=discord.ButtonStyle.primary,
-        custom_id="refresh_leaderboard_button",
-    )
-    async def refresh_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        mode = None
-        title = interaction.message.embeds[0].title
-        if "All-Time" in title:
-            mode = "forever"
-        elif "Monthly" in title:
-            mode = "monthly"
-        elif "Weekly" in title:
-            mode = "weekly"
-        embed = await self.cog._build_mode_embed(mode or "forever")
-        try:
-            await interaction.response.edit_message(embed=embed, view=self)
-        except NotFound:
-            # If interaction is invalid, send a new ephemeral message to the user
-            await interaction.followup.send(
-                content="⚠️ This leaderboard view expired. Please run `/leaderboard` again.",
-                ephemeral=True,
-            )
+        @discord.ui.button(
+            label="🔄 Refresh",
+            style=discord.ButtonStyle.primary,
+            custom_id="refresh_leaderboard_button",
+        )
+        async def refresh_button(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            mode = None
+            title = interaction.message.embeds[0].title
+            if "All-Time" in title:
+                mode = "forever"
+            elif "Monthly" in title:
+                mode = "monthly"
+            elif "Weekly" in title:
+                mode = "weekly"
+            embed = await self.cog._build_mode_embed(mode or "forever")
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except discord.errors.NotFound:
+                await interaction.followup.send(
+                    content="⚠️ This leaderboard view expired. Please use `/leaderboard` again.",
+                    ephemeral=True,
+                )
+
+        async def on_timeout(self):
+            # Optionally, disable all components when view times out
+            for item in self.children:
+                item.disabled = True
 
     @app_commands.command(
         name="rank", description="Show your rank and message count in the leaderboards."
@@ -227,7 +238,6 @@ class MessageTracker(commands.Cog):
     ):
         user = user or interaction.user
 
-        # Helper for ranking
         async def get_rank_and_count(mode: str):
             now = datetime.now(timezone.utc)
             async with aiosqlite.connect(self.db_path) as db:
@@ -280,7 +290,6 @@ class MessageTracker(commands.Cog):
             timestamp=datetime.utcnow(),
         )
 
-        # All leaderboard types
         modes = [
             ("forever", "🏆 All-Time"),
             ("monthly", "📅 Monthly"),
