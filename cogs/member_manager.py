@@ -13,37 +13,22 @@ class MemberManager(commands.Cog):
         self.flag_pattern = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
 
     @commands.Cog.listener()
-    async def on_ready(self):
-        """Remove existing flag reactions when bot starts"""
-        for guild in self.bot.guilds:
-            for channel in guild.text_channels:
-                try:
-                    async for message in channel.history(
-                        limit=100
-                    ):  # Adjust limit as needed
-                        await self.clean_message_reactions(message)
-                except (discord.Forbidden, discord.HTTPException):
-                    continue
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot:
+    async def on_raw_reaction_add(self, payload):
+        if payload.user_id == self.bot.user.id:
             return
 
-        if self.flag_pattern.search(str(reaction.emoji)):
+        if self.flag_pattern.search(str(payload.emoji)):
             try:
-                await reaction.remove(user)
-            except (discord.Forbidden, discord.NotFound):
-                pass
+                channel = self.bot.get_channel(payload.channel_id)
+                message = await channel.fetch_message(payload.message_id)
+                user = self.bot.get_user(payload.user_id)
 
-    async def clean_message_reactions(self, message):
-        """Remove flag reactions from a message"""
-        for reaction in message.reactions:
-            if self.flag_pattern.search(str(reaction.emoji)):
-                try:
-                    await reaction.clear()
-                except (discord.Forbidden, discord.NotFound):
-                    pass
+                for reaction in message.reactions:
+                    if str(reaction.emoji) == str(payload.emoji):
+                        await reaction.remove(user)
+                        break
+            except (discord.Forbidden, discord.NotFound, AttributeError):
+                pass
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
