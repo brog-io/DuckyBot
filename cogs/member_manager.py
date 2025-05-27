@@ -12,6 +12,17 @@ class MemberManager(commands.Cog):
         self.bot = bot
         self.flag_pattern = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
 
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        if user.bot:
+            return
+
+        if self.flag_pattern.search(str(reaction.emoji)):
+            try:
+                await reaction.remove(user)
+            except (discord.Forbidden, discord.NotFound):
+                pass
+
     def remove_flags_from_name(self, name: str) -> str:
         return self.flag_pattern.sub("", name).strip()
 
