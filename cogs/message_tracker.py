@@ -167,65 +167,72 @@ class MessageTracker(commands.Cog):
         view = self.LeaderboardView(self)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    class LeaderboardView(discord.ui.View):
-        def __init__(self, cog):
-            # Timeout is 5 minutes; change if you want longer
-            super().__init__(timeout=300)
-            self.cog = cog
 
-        @discord.ui.select(
-            placeholder="Select timeframe",
-            min_values=1,
-            max_values=1,
-            options=[
-                discord.SelectOption(label="All-Time", value="forever", emoji="🏆"),
-                discord.SelectOption(label="Monthly", value="monthly", emoji="📅"),
-                discord.SelectOption(label="Weekly", value="weekly", emoji="📆"),
-            ],
-            custom_id="leaderboard_timeframe_select",
-        )
-        async def select_timeframe(
-            self, interaction: discord.Interaction, select: discord.ui.Select
-        ):
-            mode = select.values[0]
-            embed = await self.cog._build_mode_embed(mode)
+class LeaderboardView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=300)
+        self.cog = cog
+
+    @discord.ui.select(
+        placeholder="Select timeframe",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(label="All-Time", value="forever", emoji="🏆"),
+            discord.SelectOption(label="Monthly", value="monthly", emoji="📅"),
+            discord.SelectOption(label="Weekly", value="weekly", emoji="📆"),
+        ],
+        custom_id="leaderboard_timeframe_select",
+    )
+    async def select_timeframe(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ):
+        mode = select.values[0]
+        embed = await self.cog._build_mode_embed(mode)
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except discord.NotFound:
             try:
-                await interaction.response.edit_message(embed=embed, view=self)
-            except discord.errors.NotFound:
                 await interaction.followup.send(
-                    content="⚠️ This leaderboard view expired. Please use `/leaderboard` again.",
+                    content="⚠️ This leaderboard view expired or is no longer valid. Please use `/leaderboard` again.",
                     ephemeral=True,
                 )
+            except discord.NotFound:
+                pass  # Even followup may fail if webhook is gone
 
-        @discord.ui.button(
-            label="🔄 Refresh",
-            style=discord.ButtonStyle.primary,
-            custom_id="refresh_leaderboard_button",
+    @discord.ui.button(
+        label="🔄 Refresh",
+        style=discord.ButtonStyle.primary,
+        custom_id="refresh_leaderboard_button",
+    )
+    async def refresh_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        mode = None
+        title = (
+            interaction.message.embeds[0].title if interaction.message.embeds else ""
         )
-        async def refresh_button(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            mode = None
-            title = interaction.message.embeds[0].title
-            if "All-Time" in title:
-                mode = "forever"
-            elif "Monthly" in title:
-                mode = "monthly"
-            elif "Weekly" in title:
-                mode = "weekly"
-            embed = await self.cog._build_mode_embed(mode or "forever")
+        if "All-Time" in title:
+            mode = "forever"
+        elif "Monthly" in title:
+            mode = "monthly"
+        elif "Weekly" in title:
+            mode = "weekly"
+        embed = await self.cog._build_mode_embed(mode or "forever")
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except discord.NotFound:
             try:
-                await interaction.response.edit_message(embed=embed, view=self)
-            except discord.errors.NotFound:
                 await interaction.followup.send(
-                    content="⚠️ This leaderboard view expired. Please use `/leaderboard` again.",
+                    content="⚠️ This leaderboard view expired or is no longer valid. Please use `/leaderboard` again.",
                     ephemeral=True,
                 )
+            except discord.NotFound:
+                pass  # Sometimes this fails too
 
-        async def on_timeout(self):
-            # Optionally, disable all components when view times out
-            for item in self.children:
-                item.disabled = True
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
 
     @app_commands.command(
         name="rank", description="Show your rank and message count in the leaderboards."
