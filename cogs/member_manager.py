@@ -13,6 +13,19 @@ class MemberManager(commands.Cog):
         self.flag_pattern = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
 
     @commands.Cog.listener()
+    async def on_ready(self):
+        """Remove existing flag reactions when bot starts"""
+        for guild in self.bot.guilds:
+            for channel in guild.text_channels:
+                try:
+                    async for message in channel.history(
+                        limit=100
+                    ):  # Adjust limit as needed
+                        await self.clean_message_reactions(message)
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
+
+    @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
         if user.bot:
             return
@@ -23,8 +36,14 @@ class MemberManager(commands.Cog):
             except (discord.Forbidden, discord.NotFound):
                 pass
 
-    def remove_flags_from_name(self, name: str) -> str:
-        return self.flag_pattern.sub("", name).strip()
+    async def clean_message_reactions(self, message):
+        """Remove flag reactions from a message"""
+        for reaction in message.reactions:
+            if self.flag_pattern.search(str(reaction.emoji)):
+                try:
+                    await reaction.clear()
+                except (discord.Forbidden, discord.NotFound):
+                    pass
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
