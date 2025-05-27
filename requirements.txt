@@ -12,3 +12,4 @@ lxml_html_clean
 cachetools
 PyJWT
 aiosqlite
+aiomysql

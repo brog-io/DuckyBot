@@ -1,20 +1,41 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import aiosqlite
+import aiomysql
 import json
 from datetime import datetime, timezone, timedelta
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 LEADERBOARD_CHANNEL_ID = 953689741432340540
+
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
 
 
 class MessageTracker(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = "messages.db"
         self.cache_path = "leaderboard_cache.json"
         self.pinned_message_ids = {}
+        self.db_pool = None
         bot.loop.create_task(self._init_everything())
+
+    async def _get_pool(self):
+        if self.db_pool is None:
+            self.db_pool = await aiomysql.create_pool(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                db=MYSQL_DATABASE,
+                autocommit=True,
+                charset="utf8mb4",
+            )
+        return self.db_pool
 
     async def _init_everything(self):
         await self.bot.wait_until_ready()
@@ -24,17 +45,18 @@ class MessageTracker(commands.Cog):
             self.update_leaderboards.start()
 
     async def _init_db(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    timestamp TIMESTAMP NOT NULL
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        timestamp DATETIME NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            await db.commit()
 
     async def _ensure_pinned_messages(self):
         try:
@@ -67,56 +89,59 @@ class MessageTracker(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        now = datetime.now(timezone.utc)
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO messages (user_id, timestamp) VALUES (?, ?)",
-                (message.author.id, now),
-            )
-            await db.commit()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "INSERT INTO messages (user_id, timestamp) VALUES (%s, %s)",
+                    (message.author.id, now),
+                )
 
     async def _fetch_leaderboard(self, mode: str):
         now = datetime.now(timezone.utc)
-        async with aiosqlite.connect(self.db_path) as db:
-            if mode == "forever":
-                query = """
-                    SELECT user_id, COUNT(*) as count
-                    FROM messages
-                    GROUP BY user_id
-                    ORDER BY count DESC
-                    LIMIT 10
-                """
-                cursor = await db.execute(query)
-            elif mode == "monthly":
-                start_month = now.replace(
-                    day=1, hour=0, minute=0, second=0, microsecond=0
-                )
-                query = """
-                    SELECT user_id, COUNT(*) as count
-                    FROM messages
-                    WHERE timestamp >= ?
-                    GROUP BY user_id
-                    ORDER BY count DESC
-                    LIMIT 10
-                """
-                cursor = await db.execute(query, (start_month,))
-            elif mode == "weekly":
-                start_week = now - timedelta(days=now.weekday())
-                start_week = start_week.replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
-                query = """
-                    SELECT user_id, COUNT(*) as count
-                    FROM messages
-                    WHERE timestamp >= ?
-                    GROUP BY user_id
-                    ORDER BY count DESC
-                    LIMIT 10
-                """
-                cursor = await db.execute(query, (start_week,))
-            else:
-                return []
-            return await cursor.fetchall()
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                if mode == "forever":
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                        LIMIT 10
+                    """
+                    await cursor.execute(query)
+                elif mode == "monthly":
+                    start_month = now.replace(
+                        day=1, hour=0, minute=0, second=0, microsecond=0
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        WHERE timestamp >= %s
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                        LIMIT 10
+                    """
+                    await cursor.execute(query, (start_month,))
+                elif mode == "weekly":
+                    start_week = now - timedelta(days=now.weekday())
+                    start_week = start_week.replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        WHERE timestamp >= %s
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                        LIMIT 10
+                    """
+                    await cursor.execute(query, (start_week,))
+                else:
+                    return []
+                return await cursor.fetchall()
 
     async def _build_mode_embed(self, mode: str):
         leaderboard = await self._fetch_leaderboard(mode)
@@ -204,48 +229,50 @@ class MessageTracker(commands.Cog):
         # Helper for ranking
         async def get_rank_and_count(mode: str):
             now = datetime.now(timezone.utc)
-            async with aiosqlite.connect(self.db_path) as db:
-                if mode == "forever":
-                    query = """
-                        SELECT user_id, COUNT(*) as count
-                        FROM messages
-                        GROUP BY user_id
-                        ORDER BY count DESC
-                    """
-                    cursor = await db.execute(query)
-                elif mode == "monthly":
-                    start_month = now.replace(
-                        day=1, hour=0, minute=0, second=0, microsecond=0
-                    )
-                    query = """
-                        SELECT user_id, COUNT(*) as count
-                        FROM messages
-                        WHERE timestamp >= ?
-                        GROUP BY user_id
-                        ORDER BY count DESC
-                    """
-                    cursor = await db.execute(query, (start_month,))
-                elif mode == "weekly":
-                    start_week = now - timedelta(days=now.weekday())
-                    start_week = start_week.replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    )
-                    query = """
-                        SELECT user_id, COUNT(*) as count
-                        FROM messages
-                        WHERE timestamp >= ?
-                        GROUP BY user_id
-                        ORDER BY count DESC
-                    """
-                    cursor = await db.execute(query, (start_week,))
-                else:
-                    return None, 0
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    if mode == "forever":
+                        query = """
+                            SELECT user_id, COUNT(*) as count
+                            FROM messages
+                            GROUP BY user_id
+                            ORDER BY count DESC
+                        """
+                        await cursor.execute(query)
+                    elif mode == "monthly":
+                        start_month = now.replace(
+                            day=1, hour=0, minute=0, second=0, microsecond=0
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        query = """
+                            SELECT user_id, COUNT(*) as count
+                            FROM messages
+                            WHERE timestamp >= %s
+                            GROUP BY user_id
+                            ORDER BY count DESC
+                        """
+                        await cursor.execute(query, (start_month,))
+                    elif mode == "weekly":
+                        start_week = now - timedelta(days=now.weekday())
+                        start_week = start_week.replace(
+                            hour=0, minute=0, second=0, microsecond=0
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        query = """
+                            SELECT user_id, COUNT(*) as count
+                            FROM messages
+                            WHERE timestamp >= %s
+                            GROUP BY user_id
+                            ORDER BY count DESC
+                        """
+                        await cursor.execute(query, (start_week,))
+                    else:
+                        return None, 0
 
-                leaderboard = await cursor.fetchall()
-                for i, (user_id, count) in enumerate(leaderboard, start=1):
-                    if user_id == user.id:
-                        return i, count
-                return None, 0
+                    leaderboard = await cursor.fetchall()
+                    for i, (user_id, count) in enumerate(leaderboard, start=1):
+                        if user_id == user.id:
+                            return i, count
+                    return None, 0
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         embed = discord.Embed(
