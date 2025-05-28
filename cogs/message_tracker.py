@@ -174,7 +174,7 @@ class MessageTracker(commands.Cog):
                 medal = medals[i - 1] if i <= 3 else f"#{i}"
                 embed.add_field(
                     name=f"{medal} **{user.display_name}**",
-                    value=f"{count} messages",
+                    value=f"> {count} messages",
                     inline=False,
                 )
             except discord.NotFound:
