@@ -111,7 +111,22 @@ class ScamLinkDetector(commands.Cog):
                         )
                     except Exception as e:
                         print(f"[ScamLinkDetector] Failed to delete message: {e}")
-                    return  # Only need to delete once, stop after first hit
+                    return  # Stop after first hit
+
+            else:
+                # Not a shortener, check directly
+                if any(
+                    domain == scam or domain.endswith("." + scam)
+                    for scam in self.scam_domains
+                ):
+                    try:
+                        await message.delete()
+                        print(
+                            f"[ScamLinkDetector] Blocked {message.author} for direct scam link: {url}"
+                        )
+                    except Exception as e:
+                        print(f"[ScamLinkDetector] Failed to delete message: {e}")
+                    return  # Stop after first hit
 
 
 async def setup(bot):
