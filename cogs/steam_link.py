@@ -10,7 +10,9 @@ load_dotenv()
 POGGERS_API_KEY = os.getenv("POGGERS_API_KEY")
 
 SCAM_LIST_URL = "https://raw.githubusercontent.com/Discord-AntiScam/scam-links/refs/heads/main/list.txt"
-SHORTENER_LIST_URL = "https://raw.githubusercontent.com/PeterDaveHello/url-shorteners/refs/heads/master/list"
+SHORTENER_LIST_URL = (
+    "https://raw.githubusercontent.com/PeterDaveHello/url-shorteners/master/list"
+)
 
 # Set of shortener domains you want to always allow and never unshorten/check
 SHORTENER_WHITELIST = {"youtu.be", "discord.gg"}
@@ -49,7 +51,12 @@ async def poggers_unshorten(url):
             timeout=12,
         )
         data = r.json()
-        return data.get("result") if data.get("success") and data.get("result") else url
+        # Use 'completeUrl' for final destination
+        return (
+            data.get("completeUrl")
+            if data.get("success") and data.get("completeUrl")
+            else url
+        )
 
 
 class ScamLinkDetector(commands.Cog):
