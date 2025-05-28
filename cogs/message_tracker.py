@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-LEADERBOARD_CHANNEL_ID = 953689741432340540
+LEADERBOARD_CHANNEL_ID = 1377185231995666542
 
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
