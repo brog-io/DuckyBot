@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 POGGERS_API_KEY = os.getenv("POGGERS_API_KEY")
-discord_token = os.getenv("DISCORD_BOT_TOKEN")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
     raise ValueError("OPENAI_API_KEY is not set in .env")
@@ -100,7 +99,6 @@ async def check_scam_with_openai(message: str) -> bool:
             "- Use of URLs to move conversation off Discord for these purposes\n\n"
             "Consider all these factors carefully and provide the most accurate assessment possible. DO NOT provide additional context or explanation, only the JSON object."
         )
-
         response = await openai_client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
@@ -191,29 +189,15 @@ class ScamDetection(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        # Only skip bots and non-guild messages
         if message.author == self.bot.user or message.author.bot or not message.guild:
-            return
-        if (
-            not message.channel.category
-            or message.channel.category.id not in self.allowed_category_ids
-        ):
-            return
-        account_age = datetime.now(timezone.utc) - message.author.created_at
-        if account_age >= timedelta(days=2 * 365):
-            return
-        if len(message.content) < 30:
-            return
-        bucket = self.cooldowns.get_bucket(message)
-        if bucket.update_rate_limit():
-            return
-        author_roles = [role.id for role in message.author.roles]
-        if any(role_id in whitelisted_role_ids for role_id in author_roles):
             return
 
         content = message.content.strip()
         urls = extract_urls(content)
         for url in urls:
             domain = get_domain(url)
+            # Blocklist: always checked!
             if domain in self.shortener_domains and domain not in SHORTENER_WHITELIST:
                 final_url = await poggers_unshorten(url)
                 final_domain = get_domain(final_url)
@@ -231,14 +215,27 @@ class ScamDetection(commands.Cog):
                     await self._handle_scam(message, content, reason="domain")
                     return
 
-        if content in self._scam_cache:
-            is_scam = self._scam_cache[content]
-        else:
-            is_scam = await check_scam_with_openai(content)
-            self._scam_cache[content] = is_scam
-
-        if is_scam:
-            await self._handle_scam(message, content, reason="ai")
+        # --- AI check (stricter, for spammy/young/unknown users) ---
+        if (
+            message.channel.category
+            and message.channel.category.id in self.allowed_category_ids
+        ):
+            account_age = datetime.now(timezone.utc) - message.author.created_at
+            if account_age < timedelta(days=2 * 365):
+                if len(message.content) >= 30:
+                    bucket = self.cooldowns.get_bucket(message)
+                    if not bucket.update_rate_limit():
+                        author_roles = [role.id for role in message.author.roles]
+                        if not any(
+                            role_id in whitelisted_role_ids for role_id in author_roles
+                        ):
+                            if content in self._scam_cache:
+                                is_scam = self._scam_cache[content]
+                            else:
+                                is_scam = await check_scam_with_openai(content)
+                                self._scam_cache[content] = is_scam
+                            if is_scam:
+                                await self._handle_scam(message, content, reason="ai")
 
     async def _handle_scam(self, message, content, reason="unknown"):
         try:
