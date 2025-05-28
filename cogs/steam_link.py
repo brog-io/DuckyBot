@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import re
 import httpx
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
