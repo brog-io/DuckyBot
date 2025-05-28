@@ -154,11 +154,7 @@ class MessageTracker(commands.Cog):
             "weekly": "📆 Weekly Leaderboard",
         }
 
-        embed = discord.Embed(
-            title=titles.get(mode, "Leaderboard"),
-            color=0xFFCD3F,
-            timestamp=datetime.utcnow(),
-        )
+        embed = discord.Embed(title=titles.get(mode, "Leaderboard"), color=0xFFCD3F)
 
         try:
             top_user_id = leaderboard[0][0]
@@ -275,11 +271,7 @@ class MessageTracker(commands.Cog):
                     return None, 0
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        embed = discord.Embed(
-            title=f"📊 Rank for {user.display_name}",
-            color=0xFFCD3F,
-            timestamp=datetime.utcnow(),
-        )
+        embed = discord.Embed(title=f"📊 Rank for {user.display_name}", color=0xFFCD3F)
 
         # All leaderboard types
         modes = [
