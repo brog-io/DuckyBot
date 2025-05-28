@@ -1,9 +1,11 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import Button, View
 from openai import AsyncOpenAI
 from cachetools import TTLCache
 from datetime import datetime, timezone, timedelta
+import re
+import httpx
 import json
 import os
 import logging
@@ -11,23 +13,76 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+POGGERS_API_KEY = os.getenv("POGGERS_API_KEY")
 discord_token = os.getenv("DISCORD_BOT_TOKEN")
 openai_api_key = os.getenv("OPENAI_API_KEY")
-
 if not openai_api_key:
     raise ValueError("OPENAI_API_KEY is not set in .env")
-
 openai_client = AsyncOpenAI(api_key=openai_api_key)
 
 config_file = "config.json"
 with open(config_file) as f:
     config = json.load(f)
-
 log_channel_id = config["log_channel_id"]
 whitelisted_role_ids = config["role_whitelist"]
 allowed_category_ids = config.get("allowed_category_ids", [])
 
+SCAM_LIST_URL = "https://raw.githubusercontent.com/Discord-AntiScam/scam-links/refs/heads/main/list.txt"
+SHORTENER_LIST_URL = (
+    "https://raw.githubusercontent.com/PeterDaveHello/url-shorteners/master/list"
+)
+SHORTENER_WHITELIST = {"youtu.be", "discord.gg"}
+
 logger = logging.getLogger(__name__)
+
+
+def extract_urls(text):
+    url_pattern = re.compile(
+        r"""(?xi)
+        \b(
+            (?:https?://)?               
+            (?:www\.)?                   
+            [a-z0-9\-]+(\.[a-z]{2,})+    
+            (?:/[^\s]*)?                 
+        )
+        """
+    )
+    return [m.group(0) for m in url_pattern.finditer(text)]
+
+
+def get_domain(url):
+    domain = url.split("//")[-1].split("/")[0].lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if ":" in domain:
+        domain = domain.split(":")[0]
+    return domain
+
+
+async def fetch_txt_list(url):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, timeout=15)
+        r.raise_for_status()
+        return set(
+            line.strip().lower()
+            for line in r.text.splitlines()
+            if line and not line.startswith("#")
+        )
+
+
+async def poggers_unshorten(url):
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://api.poggers.win/api/ente/unshorten-url",
+            json={"url": url, "key": POGGERS_API_KEY},
+            timeout=12,
+        )
+        data = r.json()
+        return (
+            data.get("completeUrl")
+            if data.get("success") and data.get("completeUrl")
+            else url
+        )
 
 
 async def check_scam_with_openai(message: str) -> bool:
@@ -73,10 +128,9 @@ class ModerationButtons(View):
         if not interaction.user.guild_permissions.moderate_members:
             await interaction.response.send_message("No permission.", ephemeral=True)
             return
-
         try:
             await self.author.timeout(
-                None, reason="Timeout manually removed via PhishHook."
+                None, reason="Timeout manually removed via Ducky."
             )
             await interaction.response.send_message(
                 f"Timeout removed for {self.author.name}.", ephemeral=True
@@ -89,7 +143,7 @@ class ModerationButtons(View):
     @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary)
     async def kick_user(self, interaction: discord.Interaction, button: Button):
         if interaction.user.guild_permissions.kick_members:
-            await self.author.kick(reason="Scam message detected by PhishHook.")
+            await self.author.kick(reason="Scam message detected by Ducky.")
             await interaction.response.send_message(
                 f"{self.author.name} was kicked.", ephemeral=True
             )
@@ -99,7 +153,7 @@ class ModerationButtons(View):
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
     async def ban_user(self, interaction: discord.Interaction, button: Button):
         if interaction.user.guild_permissions.ban_members:
-            await self.author.ban(reason="Scam message detected by PhishHook.")
+            await self.author.ban(reason="Scam message detected by Ducky.")
             await interaction.response.send_message(
                 f"{self.author.name} was banned.", ephemeral=True
             )
@@ -110,57 +164,91 @@ class ModerationButtons(View):
 class ScamDetection(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.scam_domains = set()
+        self.shortener_domains = set()
         self._scam_cache = TTLCache(maxsize=1024, ttl=300)
         self.cooldowns = commands.CooldownMapping.from_cooldown(
             3, 60, commands.BucketType.channel
         )
         self.allowed_category_ids = allowed_category_ids
+        self.update_lists.start()
+
+    def cog_unload(self):
+        self.update_lists.cancel()
+
+    @tasks.loop(hours=1)
+    async def update_lists(self):
+        self.scam_domains = await fetch_txt_list(SCAM_LIST_URL)
+        self.shortener_domains = await fetch_txt_list(SHORTENER_LIST_URL)
+        print(
+            f"[ScamDetection] Loaded {len(self.scam_domains)} scam domains and {len(self.shortener_domains)} shortener domains."
+        )
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if not self.update_lists.is_running():
+            self.update_lists.start()
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.author.bot or not message.guild:
             return
-
         if (
             not message.channel.category
             or message.channel.category.id not in self.allowed_category_ids
         ):
             return
-
         account_age = datetime.now(timezone.utc) - message.author.created_at
         if account_age >= timedelta(days=2 * 365):
             return
-
         if len(message.content) < 30:
             return
-
         bucket = self.cooldowns.get_bucket(message)
         if bucket.update_rate_limit():
             return
-
         author_roles = [role.id for role in message.author.roles]
         if any(role_id in whitelisted_role_ids for role_id in author_roles):
             return
 
         content = message.content.strip()
+        urls = extract_urls(content)
+        for url in urls:
+            domain = get_domain(url)
+            if domain in self.shortener_domains and domain not in SHORTENER_WHITELIST:
+                final_url = await poggers_unshorten(url)
+                final_domain = get_domain(final_url)
+                if any(
+                    final_domain == scam or final_domain.endswith("." + scam)
+                    for scam in self.scam_domains
+                ):
+                    await self._handle_scam(message, content, reason="domain")
+                    return
+            else:
+                if any(
+                    domain == scam or domain.endswith("." + scam)
+                    for scam in self.scam_domains
+                ):
+                    await self._handle_scam(message, content, reason="domain")
+                    return
+
         if content in self._scam_cache:
             is_scam = self._scam_cache[content]
         else:
             is_scam = await check_scam_with_openai(content)
             self._scam_cache[content] = is_scam
 
-        if not is_scam:
-            return
+        if is_scam:
+            await self._handle_scam(message, content, reason="ai")
 
+    async def _handle_scam(self, message, content, reason="unknown"):
         try:
             await message.delete()
         except Exception as e:
             logger.warning(f"Failed to delete message: {e}")
-
         try:
             timeout_until = discord.utils.utcnow() + timedelta(days=1)
             await message.author.timeout(
-                timeout_until, reason="Scam message detected by PhishHook."
+                timeout_until, reason="Scam message detected by Ducky."
             )
         except Exception as e:
             logger.warning(f"Failed to timeout user: {e}")
@@ -169,7 +257,7 @@ class ScamDetection(commands.Cog):
         if log_channel:
             embed = discord.Embed(
                 title="🚨 Scam Message Detected & Auto-Deleted",
-                description=f"{message.author.mention} in {message.channel.mention} was **timed out for 1 day**.\n\n**Message content:**\n{content}",
+                description=f"{message.author.mention} in {message.channel.mention} was **timed out for 1 day**.\n\n**Reason:** `{reason}`\n\n**Message content:**\n{content}",
                 color=discord.Color.red(),
             )
             embed.set_footer(text=f"User ID: {message.author.id}")
@@ -177,5 +265,5 @@ class ScamDetection(commands.Cog):
             await log_channel.send(embed=embed, view=view)
 
 
-def setup(bot):
-    bot.add_cog(ScamDetection(bot))
+async def setup(bot):
+    await bot.add_cog(ScamDetection(bot))
