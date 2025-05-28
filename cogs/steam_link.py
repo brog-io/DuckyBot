@@ -19,8 +19,18 @@ SHORTENER_WHITELIST = {"youtu.be", "discord.gg"}
 
 
 def extract_urls(text):
-    url_pattern = re.compile(r"https?://[^\s>]+")
-    return url_pattern.findall(text)
+    # Regex covers http(s)://, www., and bare domains with TLDs
+    url_pattern = re.compile(
+        r"""(?xi)
+        \b(
+            (?:https?://)?               # Optional http:// or https://
+            (?:www\.)?                   # Optional www.
+            [a-z0-9\-]+(\.[a-z]{2,})+    # Domain
+            (?:/[^\s]*)?                 # Optional path
+        )
+        """
+    )
+    return [m.group(0) for m in url_pattern.finditer(text)]
 
 
 def get_domain(url):
