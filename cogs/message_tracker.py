@@ -173,7 +173,7 @@ class MessageTracker(commands.Cog):
                 user = await self.bot.fetch_user(user_id)
                 medal = medals[i - 1] if i <= 3 else f"#{i}"
                 embed.add_field(
-                    name=f"{medal} {user.display_name}",
+                    name=f"{medal} **{user.display_name}**",
                     value=f"{count} messages",
                     inline=False,
                 )
