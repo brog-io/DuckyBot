@@ -264,27 +264,24 @@ class SelfHelp(commands.Cog):
         if message.author.bot:
             return
 
-        if channel.id in SELFHELP_CHANNEL_IDS:
-            thread = await message.create_thread(name=message.content[:90])
+        user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
+            payload.user_id
+        )
+        thread = await message.create_thread(name=message.content[:90])
+        await thread.send(
+            f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
+        )
 
-            user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
-                payload.user_id
-            )
-
-            await thread.send(
-                f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
-            )
-
-            answer = await self.query_api(message.content)
-            show_help = self.should_show_help_button(message.channel.id)
-            await thread.send(
-                answer,
-                view=SupportView(
-                    thread_owner=payload.user_id,
-                    parent_channel_id=thread.parent_id,
-                    show_help_button=show_help,
-                ),
-            )
+        # Always use AI for questionmark
+        answer = await self.query_api(message.content)
+        await thread.send(
+            answer,
+            view=SupportView(
+                thread_owner=payload.user_id,
+                parent_channel_id=thread.parent_id,
+                show_help_button=True,
+            ),
+        )
 
 
 async def setup(bot):
