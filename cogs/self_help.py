@@ -78,7 +78,7 @@ class SupportView(ui.View):
                 label="Mark as Solved",
                 style=discord.ButtonStyle.success,
                 custom_id="mark_solved_button",
-                row=1,
+                row=0,
             )
 
         async def callback(self, interaction: discord.Interaction):
