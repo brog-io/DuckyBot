@@ -247,44 +247,35 @@ class SelfHelp(commands.Cog):
         ):
             return
 
-        @commands.Cog.listener()
-        async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-            if str(payload.emoji) != REACTION_TRIGGER:
-                return
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if str(payload.emoji) != REACTION_TRIGGER:
+            return
 
-            channel = self.bot.get_channel(payload.channel_id)
-            if not channel:
-                return
+        channel = self.bot.get_channel(payload.channel_id)
+        if not channel:
+            return
 
-            try:
-                message = await channel.fetch_message(payload.message_id)
-            except Exception:
-                return
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            return
 
-            # Prevent ? reaction from triggering in a thread
-            if isinstance(discord.Thread):
-                return
+        if message.author.bot:
+            return
 
-            if message.author.bot:
-                return
+        thread = await message.create_thread(name=message.content[:90])
 
-            user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
-                payload.user_id
-            )
-            thread = await message.create_thread(name=message.content[:90])
-            await thread.send(
-                f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
-            )
+        user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
+            payload.user_id
+        )
 
-            answer = await self.query_api(message.content)
-            await thread.send(
-                answer,
-                view=SupportView(
-                    thread_owner=payload.user_id,
-                    parent_channel_id=thread.parent_id,
-                    show_help_button=True,
-                ),
-            )
+        await thread.send(
+            f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
+        )
+
+        answer = await self.query_api(message.content)
+        await thread.send(answer, view=SupportView(thread_owner=payload.user_id))
 
 
 async def setup(bot):
