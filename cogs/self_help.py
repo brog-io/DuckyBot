@@ -262,7 +262,7 @@ class SelfHelp(commands.Cog):
                 return
 
             # Prevent ? reaction from triggering in a thread
-            if isinstance(message.channel, discord.Thread):
+            if isinstance(discord.Thread):
                 return
 
             if message.author.bot:
