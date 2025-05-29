@@ -33,10 +33,9 @@ class SupportView(ui.View):
         super().__init__(timeout=None)
         self.thread_owner = thread_owner
         self.parent_channel_id = parent_channel_id
-        self.show_help_button = show_help_button
-        if not show_help_button:
-            self.help_button.disabled = True
-            self.help_button.row = None
+        if show_help_button:
+            self.add_item(self.HelpButton())
+        self.add_item(self.SolvedButton())
 
     def is_authorized(self, user: discord.Member) -> bool:
         if user.id == self.thread_owner:
@@ -49,76 +48,83 @@ class SupportView(ui.View):
                     return True
         return False
 
-    @ui.button(
-        label="This didn't help",
-        style=discord.ButtonStyle.danger,
-        custom_id="support_button",
-        row=0,
-    )
-    async def help_button(self, interaction: discord.Interaction, button: ui.Button):
-        if not self.is_authorized(interaction.user):
-            await interaction.response.send_message(
-                "Only the thread creator or moderators can use this button.",
-                ephemeral=True,
+    class HelpButton(ui.Button):
+        def __init__(self):
+            super().__init__(
+                label="This didn't help",
+                style=discord.ButtonStyle.danger,
+                custom_id="support_button",
+                row=0,
             )
-            return
-        await interaction.response.send_message(
-            f"<@&{SUPPORT_ROLE_ID}> User still needs help in {interaction.channel.mention}",
-            ephemeral=False,
-        )
-        button.disabled = True
-        await interaction.message.edit(view=self)
 
-    @ui.button(
-        label="Mark as Solved",
-        style=discord.ButtonStyle.success,
-        custom_id="mark_solved_button",
-        row=1,
-    )
-    async def solved_button(self, interaction: discord.Interaction, button: ui.Button):
-        if not self.is_authorized(interaction.user):
-            await interaction.response.send_message(
-                "Only the thread creator or moderators can mark this as solved.",
-                ephemeral=True,
-            )
-            return
-
-        thread = interaction.channel
-        if not isinstance(thread, discord.Thread):
-            await interaction.response.send_message(
-                "This button must be used in a thread.", ephemeral=True
-            )
-            return
-
-        await interaction.response.send_message(
-            "Thread marked as solved and closed.", ephemeral=False
-        )
-
-        try:
-            if isinstance(thread.parent, discord.ForumChannel):
-                current_tags = list(thread.applied_tags) if thread.applied_tags else []
-                forum_channel = thread.parent
-                solved_tag_id = SOLVED_TAG_IDS.get(forum_channel.id)
-                solved_tag = None
-                if solved_tag_id:
-                    for tag in forum_channel.available_tags:
-                        if tag.id == solved_tag_id:
-                            solved_tag = tag
-                            break
-                if solved_tag and solved_tag not in current_tags:
-                    current_tags.append(solved_tag)
-                await thread.edit(
-                    archived=True,
-                    locked=True,
-                    applied_tags=current_tags,
+        async def callback(self, interaction: discord.Interaction):
+            view: SupportView = self.view
+            if not view.is_authorized(interaction.user):
+                await interaction.response.send_message(
+                    "Only the thread creator or moderators can use this button.",
+                    ephemeral=True,
                 )
-            else:
-                await thread.edit(
-                    archived=True,
-                    locked=True,
+                return
+            await interaction.response.send_message(
+                f"<@&{SUPPORT_ROLE_ID}> User still needs help in {interaction.channel.mention}",
+                ephemeral=False,
+            )
+            self.disabled = True
+            await interaction.message.edit(view=view)
+
+    class SolvedButton(ui.Button):
+        def __init__(self):
+            super().__init__(
+                label="Mark as Solved",
+                style=discord.ButtonStyle.success,
+                custom_id="mark_solved_button",
+                row=1,
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            view: SupportView = self.view
+            if not view.is_authorized(interaction.user):
+                await interaction.response.send_message(
+                    "Only the thread creator or moderators can mark this as solved.",
+                    ephemeral=True,
                 )
-        except Exception as e:
-            await thread.send(f"Error while closing thread: {e}")
+                return
+            thread = interaction.channel
+            if not isinstance(thread, discord.Thread):
+                await interaction.response.send_message(
+                    "This button must be used in a thread.", ephemeral=True
+                )
+                return
+            await interaction.response.send_message(
+                "Thread marked as solved and closed.", ephemeral=False
+            )
+            try:
+                if isinstance(thread.parent, discord.ForumChannel):
+                    current_tags = (
+                        list(thread.applied_tags) if thread.applied_tags else []
+                    )
+                    forum_channel = thread.parent
+                    solved_tag_id = SOLVED_TAG_IDS.get(forum_channel.id)
+                    solved_tag = None
+                    if solved_tag_id:
+                        for tag in forum_channel.available_tags:
+                            if tag.id == solved_tag_id:
+                                solved_tag = tag
+                                break
+                    if solved_tag and solved_tag not in current_tags:
+                        current_tags.append(solved_tag)
+                    await thread.edit(
+                        archived=True,
+                        locked=True,
+                        applied_tags=current_tags,
+                    )
+                else:
+                    await thread.edit(
+                        archived=True,
+                        locked=True,
+                    )
+            except Exception as e:
+                await thread.send(f"Error while closing thread: {e}")
 
 
 class SelfHelp(commands.Cog):
