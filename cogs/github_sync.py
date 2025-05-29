@@ -244,7 +244,7 @@ class GitHubDiscussions(commands.Cog):
             )
             return
 
-        await interaction.response.defer(thinking=True, ephemeral=True)
+        await interaction.response.defer(thinking=True)
 
         # Find the category ID if a category name was provided
         category_id = None
