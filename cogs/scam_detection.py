@@ -178,7 +178,7 @@ class ScamDetection(commands.Cog):
     async def update_lists(self):
         self.scam_domains = await fetch_txt_list(SCAM_LIST_URL)
         self.shortener_domains = await fetch_txt_list(SHORTENER_LIST_URL)
-        print(
+        logger.info(
             f"[ScamDetection] Loaded {len(self.scam_domains)} scam domains and {len(self.shortener_domains)} shortener domains."
         )
 
