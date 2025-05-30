@@ -11,6 +11,9 @@ from utils.rate_limiter import RateLimiter
 from datetime import datetime
 import importlib.util
 import inspect
+import warnings
+
+logging.captureWarnings(True)
 
 # Load environment variables from .env file
 load_dotenv()

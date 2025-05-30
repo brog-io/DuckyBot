@@ -23,7 +23,7 @@ class EnteStatus(commands.Cog):
         # Sync the slash commands
         try:
             synced = await self.bot.tree.sync()
-            print(f"Synced {len(synced)} command(s).")
+            logger.info(f"Synced {len(synced)} command(s).")
         except Exception as e:
             self.logger.error(f"Error syncing commands: {e}")
 
