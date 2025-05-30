@@ -2,6 +2,9 @@ import discord
 from discord.ext import commands
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LinkCleaner(commands.Cog):
@@ -78,7 +81,7 @@ class LinkCleaner(commands.Cog):
             )
             return cleaned_url
         except Exception as e:
-            print(f"Error cleaning URL {url}: {e}")
+            logger.error(f"Error cleaning URL {url}: {e}")
             return url
 
     @commands.Cog.listener()

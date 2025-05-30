@@ -3,9 +3,12 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import aiomysql
 import json
+import logging
 from datetime import datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -67,7 +70,7 @@ class MessageTracker(commands.Cog):
 
         channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
         if not channel:
-            print(f"Channel {LEADERBOARD_CHANNEL_ID} not found.")
+            logger.warning(f"Channel {LEADERBOARD_CHANNEL_ID} not found.")
             return
 
         needed = {
@@ -308,7 +311,9 @@ class MessageTracker(commands.Cog):
             await self.bot.wait_until_ready()
             channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
             if not channel:
-                print(f"Leaderboard channel {LEADERBOARD_CHANNEL_ID} not found.")
+                logger.warning(
+                    f"Leaderboard channel {LEADERBOARD_CHANNEL_ID} not found."
+                )
                 return
             for mode, msg_id in self.pinned_message_ids.items():
                 try:
@@ -316,21 +321,23 @@ class MessageTracker(commands.Cog):
                     embed = await self._build_mode_embed(mode)
                     await msg.edit(content=None, embed=embed)
                 except discord.NotFound:
-                    print(f"Leaderboard message ID {msg_id} not found. Skipping.")
+                    logger.warning(
+                        f"Leaderboard message ID {msg_id} not found. Skipping."
+                    )
                 except Exception as e:
                     import traceback
 
-                    print(f"Exception in update_leaderboards (mode {mode}): {e}")
+                    logger.error(f"Exception in update_leaderboards (mode {mode}): {e}")
                     traceback.print_exc()
         except Exception as e:
             import traceback
 
-            print(f"Fatal exception in update_leaderboards: {e}")
+            logger.error(f"Fatal exception in update_leaderboards: {e}")
             traceback.print_exc()
 
     @update_leaderboards.error
     async def update_leaderboards_error(self, error):
-        print(f"Leaderboard update loop error: {error}")
+        logger.error(f"Leaderboard update loop error: {error}")
 
     def cog_unload(self):
         if self.update_leaderboards.is_running():

@@ -95,7 +95,7 @@ class Misc(commands.Cog):
         for cmd in self.bot.tree.walk_commands():
             # Basic hardcoded filter: skip known admin-only commands
             if not is_admin and cmd.name in [
-                "welcome"
+                "welcome" "discussions"
             ]:  # Add more admin-only commands here
                 continue
 

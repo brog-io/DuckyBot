@@ -5,7 +5,10 @@ import aiohttp
 import jwt
 import time
 import os
+import logging
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -60,7 +63,7 @@ class GitHubDiscussions(commands.Cog):
             async with session.post(url, headers=headers) as resp:
                 data = await resp.json()
                 if resp.status != 201:
-                    print("Failed to get installation token:", data)
+                    logger.error("Failed to get installation token:", data)
                     return None
                 return data["token"]
 
@@ -100,13 +103,13 @@ class GitHubDiscussions(commands.Cog):
             ) as resp:
                 data = await resp.json()
                 if resp.status != 200 or "errors" in data:
-                    print("Failed to get repository info:", data)
+                    logger.error("Failed to get repository info:", data)
                     return None
 
                 repo_data = data["data"]["repository"]
-                print("Available discussion categories:")
+                logger.info("Available discussion categories:")
                 for category in repo_data["discussionCategories"]["nodes"]:
-                    print(f"  {category['name']}: {category['id']}")
+                    logger.info(f"  {category['name']}: {category['id']}")
 
                 return repo_data["id"]
 
@@ -154,7 +157,7 @@ class GitHubDiscussions(commands.Cog):
                     self._discussion_categories = categories
                     return categories
                 else:
-                    print("Failed to get categories:", data)
+                    logger.error("Failed to get categories:", data)
                     return []
 
     async def create_github_discussion(self, title, body, category_id=None):
@@ -175,7 +178,7 @@ class GitHubDiscussions(commands.Cog):
                 if categories:
                     category_id = categories[0]["id"]
                 else:
-                    print("No discussion categories found")
+                    logger.warning("No discussion categories found")
                     return None
 
         # GraphQL mutation to create a discussion
@@ -222,7 +225,7 @@ class GitHubDiscussions(commands.Cog):
                 ):
                     return data["data"]["createDiscussion"]["discussion"]["url"]
                 else:
-                    print("GitHub GraphQL error:", data)
+                    logger.error("GitHub GraphQL error:", data)
                     return None
 
     @app_commands.command(
@@ -298,14 +301,6 @@ class GitHubDiscussions(commands.Cog):
                         app_commands.Choice(name=cat["name"], value=cat["name"])
                     )
         return choices
-
-    async def cog_load(self):
-        """Called when the cog is loaded."""
-        print(f"GitHubDiscussions cog loaded for guild {self.guild_id}")
-
-    async def cog_unload(self):
-        """Called when the cog is unloaded."""
-        print("GitHubDiscussions cog unloaded")
 
 
 async def setup(bot):

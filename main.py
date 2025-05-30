@@ -5,11 +5,10 @@ import aiohttp
 import json
 import logging
 import os
+from logging.handlers import RotatingFileHandler  # <-- You need this!
 from dotenv import load_dotenv
 from utils.rate_limiter import RateLimiter
-from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
-from utils.logging_formatter import DetailedFormatter
+from datetime import datetime
 import importlib.util
 import inspect
 
@@ -26,56 +25,42 @@ DEFAULT_CONFIG_PATH = os.getenv("CONFIG_PATH", "config.json")
 
 def setup_logging() -> logging.Logger:
     """
-    Set up logging for the application, including console and file handlers, and sensitive data filtering.
+    Set up logging for the application, including console and file handlers.
     Returns the logger instance for this module.
     """
-    # Create logs directory if it doesn't exist
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR)
 
-    # Generate filename with timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d")
     log_file = f"{LOG_DIR}/discord_{timestamp}.log"
 
-    # Configure root logger
     root_logger = logging.getLogger()
     log_level = getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO)
     root_logger.setLevel(log_level)
 
-    # Prevent duplicate handlers
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    # Create console handler with a higher log level
+    # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
+    console_format = logging.Formatter("%(levelname)-8s %(name)-15s: %(message)s")
+    console_handler.setFormatter(console_format)
 
-    # Create file handler with rotation
+    # File handler with rotation
     file_handler = RotatingFileHandler(
         log_file, maxBytes=LOG_FILE_SIZE, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
     )
-    file_handler.setLevel(logging.DEBUG)  # More detailed logging to file
-
-    # Create formatters
-    console_format = logging.Formatter("%(levelname)-8s %(name)-12s: %(message)s")
+    file_handler.setLevel(logging.DEBUG)  # Log more detail to file
     file_format = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)-12s | %(message)s"
+        "%(asctime)s | %(levelname)-8s | %(name)-15s | %(message)s"
     )
-
-    # Apply formatters
-    console_handler.setFormatter(console_format)
     file_handler.setFormatter(file_format)
 
-    # Add sensitive data filter
-    sensitive_filter = SensitiveDataFilter()
-    console_handler.addFilter(sensitive_filter)
-    file_handler.addFilter(sensitive_filter)
-
-    # Add handlers to root logger
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
 
-    # Set specific log levels for noisy libraries
+    # Silence noisy libraries
     for logger_name in ["discord", "discord.http", "discord.gateway", "aiohttp"]:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 

@@ -5,6 +5,9 @@ import datetime
 from discord import app_commands
 import aiohttp
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BotStats(commands.Cog):
@@ -87,15 +90,15 @@ class BotStats(commands.Cog):
                 if response.status == 200:
                     return await response.json()
                 elif response.status == 403:
-                    print(
+                    logger.warning(
                         "[PEBBLEHOST] ❌ Unauthorized — check your API key and permissions."
                     )
                 elif response.status == 502:
-                    print(
+                    logger.warning(
                         "[PEBBLEHOST] ⚠️ Daemon unreachable — server might be offline."
                     )
                 else:
-                    print(
+                    logger.error(
                         f"[PEBBLEHOST] ❌ Unexpected error {response.status}: {await response.text()}"
                     )
                 return None

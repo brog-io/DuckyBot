@@ -2,9 +2,12 @@ import discord
 from discord.ext import commands
 import aiohttp
 import os
+import logging
 import asyncio
 from discord import ui
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 API_KEY = os.getenv("POGGERS_API_KEY")
@@ -173,7 +176,7 @@ class SelfHelp(commands.Cog):
                         body = msg.content
                         break
                 except Exception as e:
-                    print(f"Failed to fetch first message: {e}")
+                    logger.error(f"Failed to fetch first message: {e}")
 
             tag_names = []
             if isinstance(thread.parent, discord.ForumChannel):
