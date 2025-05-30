@@ -7,6 +7,8 @@ from typing import Optional
 from aiohttp import ClientTimeout
 import asyncio
 
+logger = logging.getLogger(__name__)
+
 
 class EnteStatus(commands.Cog):
     # Constants
