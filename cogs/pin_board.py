@@ -256,5 +256,5 @@ class Starboard(commands.Cog):
             await self.cleanup_missing_message(str(message.id))
 
 
-def setup(bot):
-    bot.add_cog(Starboard(bot))
+async def setup(bot):
+    await bot.add_cog(Starboard(bot))

@@ -104,5 +104,5 @@ class BotStats(commands.Cog):
                 return None
 
 
-def setup(bot):
-    bot.add_cog(BotStats(bot))
+async def setup(bot):
+    await bot.add_cog(BotStats(bot))

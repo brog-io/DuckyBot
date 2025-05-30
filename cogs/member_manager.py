@@ -89,3 +89,7 @@ class MemberManager(commands.Cog):
                 )
         else:
             logger.error("No welcome_channel_id configured in bot settings")
+
+
+async def setup(bot):
+    await bot.add_cog(MemberManager(bot))

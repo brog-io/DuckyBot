@@ -63,3 +63,7 @@ class MessageLinks(commands.Cog):
 
             except Exception as e:
                 logger.error(f"Error processing message link: {e}")
+
+
+async def setup(bot):
+    await bot.add_cog(MessageLinks(bot))
