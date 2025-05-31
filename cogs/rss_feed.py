@@ -199,7 +199,7 @@ class RSSFeedCog(commands.Cog):
         clean_text = re.sub(r"<.*?>", "", summary).strip()
 
         # Get icon and image from feed entry
-        author_icon = entry.get("meta_image_url")
+        author_icon = entry.get("meta_image__@__url")
         img_url = entry.get("media_content__@__url")  # use None if not present
 
         # Format timestamp
