@@ -14,6 +14,41 @@ class Misc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @app_commands.command(name="status", description="Check if Ente is online.")
+    async def status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as session:
+                async with session.get("https://api.ente.io/ping") as resp:
+                    data = await resp.json()
+            if resp.status == 200 and data.get("message") == "pong":
+                embed = discord.Embed(
+                    title="Ente Status",
+                    description="Ente is operational! ✅",
+                    color=discord.Color.green(),
+                )
+            else:
+                embed = discord.Embed(
+                    title="Ente Status",
+                    description="Ente might be down. ⚠️",
+                    color=discord.Color.red(),
+                )
+        except asyncio.TimeoutError:
+            embed = discord.Embed(
+                title="Ente Status",
+                description="Request timed out. Service might be experiencing delays. ⚠️",
+                color=discord.Color.orange(),
+            )
+        except Exception as e:
+            embed = discord.Embed(
+                title="Ente Status",
+                description=f"Error checking status: {e}",
+                color=discord.Color.orange(),
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     @app_commands.command(name="quack", description="How many times to quack")
     async def quack(self, interaction: discord.Interaction, times: int):
         times = max(1, min(times, 100))
