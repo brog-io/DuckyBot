@@ -14,7 +14,7 @@ logging.captureWarnings(True)
 load_dotenv()
 
 LOG_DIR = "logs"
-LOG_FILE_SIZE = 10_000_000  # 10MB
+LOG_FILE_SIZE = 10_000_000
 LOG_BACKUP_COUNT = 30
 DEFAULT_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 DEFAULT_CONFIG_PATH = os.getenv("CONFIG_PATH", "config.json")
@@ -89,7 +89,7 @@ class EnteBot(commands.Bot):
                         self.logger.error(
                             f"Failed to load extension {ext}: {e}", exc_info=True
                         )
-            # Setup persistent views for buttons (as before)
+
             from cogs.file_tracker import (
                 PersistentView as FileTrackerView,
                 RefreshButton as FileTrackerRefresh,
@@ -105,9 +105,8 @@ class EnteBot(commands.Bot):
             star_view = StarCounterView()
             star_view.add_item(StarCounterRefresh())
             self.add_view(star_view)
-            # Sync commands to a specific guild (if needed)
             self.logger.info("Attempting to sync commands...")
-            await self.tree.sync(guild=discord.Object(id=948937918347608085))
+            await self.tree.sync()
             self.logger.info("Command sync completed")
         except Exception as e:
             self.logger.error(f"Error in setup_hook: {e}", exc_info=True)
