@@ -33,5 +33,3 @@ It requires private keys, access to internal APIs, and configuration files not i
 
 If you are interested in how Ducky works, feel free to browse the code for educational purposes.  
 **Support, issues, or PRs related to self-hosting will not be accepted.**
-
----
