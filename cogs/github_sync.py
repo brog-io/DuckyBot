@@ -18,7 +18,6 @@ class GitHubDiscussions(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        self.guild_id = 948937918347608085
         self.forum_channel_id = 1121126215995113552
         self.github_repo = "ente-io/ente"
         self.github_discussion_category_id = None
@@ -233,7 +232,6 @@ class GitHubDiscussions(commands.Cog):
     )
     @app_commands.describe(category="Choose a discussion category (optional)")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def discussion(self, interaction: Interaction, category: str = None):
         thread = interaction.channel
         # Only allow in a forum thread
