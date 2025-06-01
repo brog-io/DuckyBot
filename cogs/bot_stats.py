@@ -18,12 +18,13 @@ async def ping_worker():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                await session.post(
+                async with session.post(
                     "https://brog.io/ping",
                     headers={"x-auth-key": PING_SECRET},
-                )
+                ) as resp:
+                    await resp.text()
         except Exception as e:
-            logger.error(f"Ping failed: {e}")
+            print(f"Ping failed: {e}")
         await asyncio.sleep(60)
 
 
