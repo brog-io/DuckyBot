@@ -7,8 +7,24 @@ import aiohttp
 import json
 import logging
 import os
+import asyncio
 
 logger = logging.getLogger(__name__)
+
+PING_SECRET = os.getenv("PING_SECRET")
+
+
+async def ping_worker():
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    "https://brog.io/ping",
+                    headers={"x-auth-key": PING_SECRET},
+                )
+        except Exception as e:
+            logger.error(f"Ping failed: {e}")
+        await asyncio.sleep(30)
 
 
 class BotStats(commands.Cog):
@@ -155,3 +171,4 @@ class BotStats(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(BotStats(bot))
+    bot.loop.create_task(ping_worker())
