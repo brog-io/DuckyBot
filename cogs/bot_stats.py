@@ -24,7 +24,7 @@ async def ping_worker():
                 )
         except Exception as e:
             logger.error(f"Ping failed: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
 
 
 class BotStats(commands.Cog):
