@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://img.shields.io/endpoint?url=https://brog.io/status/badge&label=Bot%20Status" alt="Bot Status" />
+</p>
+
 # Ducky — Ente Discord Server Bot
 
 **Ducky** is the custom moderation, support, and community utility bot designed exclusively for the [Ente Discord server](https://ente.io/discord).
