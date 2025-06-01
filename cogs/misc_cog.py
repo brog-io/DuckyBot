@@ -131,7 +131,7 @@ class Misc(commands.Cog):
             # Basic hardcoded filter: skip known admin-only commands
             if not is_admin and cmd.name in [
                 "welcome",
-                "discussions",
+                "discussion",
             ]:  # Add more admin-only commands here
                 continue
 
