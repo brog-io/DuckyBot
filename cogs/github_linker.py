@@ -1,15 +1,20 @@
 import discord
 from discord import app_commands, Interaction, ui
 from discord.ext import commands
+from dotenv import load_dotenv
 import aiohttp
 import secrets
 import string
+import os
+
+load_dotenv()
 
 WORKER_URL = "https://brog.io"
 ROLE_NAME = "Contributor"
 STAR_ROLE_NAME = "Stargazer"
 REPO_OWNER = "ente-io"
 REPO_NAME = "ente"
+API_KEY = os.getenv("LOOKUP_API_KEY")  # Must be set as env var!
 
 
 class LinkGithubButton(ui.View):
@@ -26,7 +31,7 @@ class LinkGithubButton(ui.View):
 
     @ui.button(label="Link GitHub", style=discord.ButtonStyle.link)
     async def link_button(self, interaction: Interaction, button: ui.Button):
-        pass
+        pass  # Button is just a link, handled below
 
 
 class GithubRolesCog(commands.Cog):
@@ -41,9 +46,11 @@ class GithubRolesCog(commands.Cog):
     async def contributor(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         discord_id = str(interaction.user.id)
+        headers = {"x-api-key": API_KEY}
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}"
+                f"{WORKER_URL}/api/lookup?discord_id={discord_id}", headers=headers
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
@@ -60,7 +67,7 @@ class GithubRolesCog(commands.Cog):
             )
             return
 
-        headers = {
+        gh_headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "brogio-discord-github-link",
         }
@@ -70,7 +77,7 @@ class GithubRolesCog(commands.Cog):
         while True:
             url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contributors?per_page={per_page}&page={page}&anon=1"
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as resp:
+                async with session.get(url, headers=gh_headers) as resp:
                     if resp.status != 200:
                         break
                     new_contribs = await resp.json()
@@ -96,7 +103,7 @@ class GithubRolesCog(commands.Cog):
                 f"?state=closed&per_page=100&page={page}"
             )
             async with aiohttp.ClientSession() as session:
-                async with session.get(pr_api_url, headers=headers) as resp:
+                async with session.get(pr_api_url, headers=gh_headers) as resp:
                     if resp.status != 200:
                         break
                     prs = await resp.json()
@@ -147,9 +154,11 @@ class GithubRolesCog(commands.Cog):
     async def starred(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         discord_id = str(interaction.user.id)
+        headers = {"x-api-key": API_KEY}
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}"
+                f"{WORKER_URL}/api/lookup?discord_id={discord_id}", headers=headers
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
@@ -168,13 +177,13 @@ class GithubRolesCog(commands.Cog):
             return
 
         url = f"https://api.github.com/user/starred/{REPO_OWNER}/{REPO_NAME}"
-        headers = {
+        gh_headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "brogio-discord-github-link",
             "Authorization": f"token {access_token}",
         }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=gh_headers) as resp:
                 if resp.status == 204:
                     starred = True
                 elif resp.status == 404:
@@ -219,10 +228,12 @@ class GithubRolesCog(commands.Cog):
     async def linkgithub(self, interaction: Interaction):
         discord_id = str(interaction.user.id)
         view = LinkGithubButton(discord_id, WORKER_URL)
+        headers = {"x-api-key": API_KEY}
         async with aiohttp.ClientSession() as session:
             async with session.put(
                 f"{WORKER_URL}/api/stateset",
                 json={"state": view.state, "discord_id": discord_id, "ttl": 600},
+                headers=headers,
             ) as resp:
                 if resp.status != 200:
                     await interaction.response.send_message(
