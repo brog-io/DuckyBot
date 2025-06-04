@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 BLOG_FEED = {
     "url": "https://ente.io/rss.xml",
-    "button_text": "Read Blog",
     "role_mention": "<@&1050340002028077106>",
     "forum_channel_id": 1121470028223623229,
 }
@@ -152,7 +151,7 @@ async def fetch_og_image(url):
 class RSSFeedCog(commands.Cog):
     """
     A cog that monitors multiple RSS feeds and posts updates to different Discord channels:
-    - Blog posts are posted as new threads in a forum channel with rich embeds.
+    - Blog posts are posted as new threads in a forum channel with automatic embeds.
     - Mastodon posts are posted as rich embeds in a text channel.
     """
 
@@ -177,7 +176,6 @@ class RSSFeedCog(commands.Cog):
         # --- BLOG FEED: post to forum channel as new thread ---
         try:
             d = feedparser.parse(BLOG_FEED["url"])
-            author_icon = self._get_feed_icon(d)
             if d.entries:
                 latest = d.entries[0]
                 entry_id = getattr(latest, "id", latest.link)
@@ -190,12 +188,8 @@ class RSSFeedCog(commands.Cog):
                         new_entries.append(entry)
                     forum_channel = self.bot.get_channel(BLOG_FEED["forum_channel_id"])
                     for entry in reversed(new_entries):
-                        await self.send_blog_embed(
-                            forum_channel,
-                            entry,
-                            BLOG_FEED["role_mention"],
-                            BLOG_FEED["button_text"],
-                            author_icon,
+                        await self.send_blog_post(
+                            forum_channel, entry, BLOG_FEED["role_mention"]
                         )
                     self.state[BLOG_FEED["url"]] = entry_id
                     changed = True
@@ -242,38 +236,17 @@ class RSSFeedCog(commands.Cog):
             return d.feed.image.href
         return ENTE_ICON_URL
 
-    async def send_blog_embed(
-        self,
-        forum_channel,
-        entry,
-        role_mention: str,
-        button_text: str,
-        author_icon: str,
-    ):
+    async def send_blog_post(self, forum_channel, entry, role_mention: str):
         """
-        Post a blog entry as a rich embed in a new forum thread.
+        Post a blog entry as a formatted message in a new forum thread.
+        Discord will automatically generate the embed from the URL.
         """
         title = get_first_str(entry.title)
         url = entry.link
-        summary = get_first_str(entry.get("summary") or entry.get("description", ""))
-        clean_summary = (
-            re.sub(r"<.*?>", "", summary).strip() if isinstance(summary, str) else ""
-        )
-        image_url = await extract_image_url(entry, fallback_url=url)
-
-        embed = discord.Embed(
-            title=title, url=url, description=clean_summary, color=0x1DB954
-        )
-        embed.set_author(name="Ente", icon_url=author_icon)
-        if image_url:
-            embed.set_image(url=image_url)
 
         if forum_channel and isinstance(forum_channel, discord.ForumChannel):
             await forum_channel.create_thread(
-                name=title[:95],
-                content=role_mention,
-                embed=embed,
-                view=LinkButton(url, button_text),
+                name=title[:95], content=f"📰 [**{title}**]({url}) **|** {role_mention}"
             )
 
     async def send_mastodon_embed(
