@@ -234,6 +234,15 @@ class GitHubDiscussions(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def discussion(self, interaction: Interaction, category: str = None):
         thread = interaction.channel
+
+        # Persistent duplicate prevention
+        if thread.id in self.discussion_posted_threads:
+            await interaction.response.send_message(
+                "A GitHub Discussion has already been posted for this thread.",
+                ephemeral=True,
+            )
+            return
+
         # Only allow in a forum thread
         if (
             not isinstance(thread, discord.Thread)
@@ -280,6 +289,14 @@ class GitHubDiscussions(commands.Cog):
                 "Failed to create GitHub Discussion.", ephemeral=True
             )
             return
+
+        # Add to persistent memory
+        self.discussion_posted_threads.add(thread.id)
+        try:
+            with open(self.posted_threads_path, "w") as f:
+                json.dump(list(self.discussion_posted_threads), f)
+        except Exception as e:
+            pass
 
         category_text = f" in category '{category}'" if category else ""
         await interaction.followup.send(
