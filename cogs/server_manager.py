@@ -156,7 +156,7 @@ class ServerManager(commands.Cog):
                     "  - **<#948956829982031912>**: Updates and news from the Ente team.\n"
                     "  - **<#1121470028223623229>**: Links to blog posts and articles.\n"
                     "  - **<#973177352446173194>**: Updates about Ente’s presence on Mastodon.\n"
-                    "  - **<#1128352882874400888>**: A place to see who joined the community.\n\n"
+                    "  - **<#1380262760994177135>**: A place to see who joined the community.\n\n"
                     "- 🐣 **ENTE**\n"
                     "  - **<#948937919027105865>**: Discussions and support related to Ente Photos.\n"
                     "  - **<#1051153671985045514>**: Focused on Ente Auth and authentication-related queries.\n"
