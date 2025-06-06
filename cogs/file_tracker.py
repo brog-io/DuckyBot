@@ -9,7 +9,10 @@ from typing import Optional, Tuple
 from aiohttp import ClientTimeout
 import json
 import os
-import urllib.parse
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +38,10 @@ class RefreshButton(Button):
 
 
 class FileTracker(commands.Cog):
-    # Constants
     API_URL = "https://api.ente.io/files/count"
-    API_TIMEOUT = ClientTimeout(total=10)  # 10 seconds timeout
+    API_TIMEOUT = ClientTimeout(total=10)
     MAX_RETRIES = 3
-    RETRY_DELAY = 1  # seconds
+    RETRY_DELAY = 1
     MILESTONES = [
         10_000,
         25_000,
@@ -131,7 +133,6 @@ class FileTracker(commands.Cog):
         self.monitor_files.start()
 
     def load_data(self):
-        """Load previous count data from file"""
         if os.path.exists(self.data_file):
             with open(self.data_file, "r") as f:
                 self.data = json.load(f)
@@ -139,7 +140,6 @@ class FileTracker(commands.Cog):
             self.data = self.default_data
 
     def save_data(self):
-        """Save current count data to file"""
         with open(self.data_file, "w") as f:
             json.dump(self.data, f)
 
@@ -147,17 +147,14 @@ class FileTracker(commands.Cog):
         self.monitor_files.cancel()
 
     async def safe_channel_edit(self, channel, new_name):
-        """Safely edit channel name with rate limit consideration"""
         now = datetime.utcnow()
         time_since_last_edit = now - self.last_channel_edit
-
         if time_since_last_edit < self.minimum_edit_interval:
             wait_time = (
                 self.minimum_edit_interval - time_since_last_edit
             ).total_seconds()
             logger.info(f"Waiting {wait_time:.2f}s before next channel edit")
             await asyncio.sleep(wait_time)
-
         try:
             await channel.edit(name=new_name)
             self.last_channel_edit = datetime.utcnow()
@@ -176,7 +173,6 @@ class FileTracker(commands.Cog):
                 raise
 
     async def fetch_file_count(self) -> Optional[int]:
-        """Fetch the current file count from the API with retries."""
         for attempt in range(self.MAX_RETRIES):
             try:
                 async with self.bot.http_session.get(
@@ -207,95 +203,128 @@ class FileTracker(commands.Cog):
                 )
                 if attempt < self.MAX_RETRIES - 1:
                     await asyncio.sleep(self.RETRY_DELAY)
-
         return None
 
-    def quickchart_url(self, max_points=30):
-        history = self.data["historical_counts"][-max_points:]
-        if len(history) < 1:
-            return None
-        chart_config = {
-            "type": "line",
-            "data": {
-                "labels": [
-                    datetime.fromtimestamp(entry["timestamp"]).strftime("%b %d")
-                    for entry in history
-                ],
-                "datasets": [
-                    {
-                        "label": "Files",
-                        "data": [entry["count"] for entry in history],
-                        "fill": False,
-                        "borderColor": "rgb(255,205,63)",
-                        "tension": 0.2,
-                    }
-                ],
-            },
-            "options": {
-                "plugins": {"legend": {"display": False}},
-                "scales": {"y": {"beginAtZero": True}},
-            },
-        }
-        config_param = urllib.parse.quote(json.dumps(chart_config))
-        url = f"https://quickchart.io/chart?c={config_param}"
-        # Discord image URLs must be <= 2048 characters
-        if len(url) > 2048:
-            history = self.data["historical_counts"][-10:]
-            chart_config["data"]["labels"] = [
-                datetime.fromtimestamp(entry["timestamp"]).strftime("%b %d")
-                for entry in history
-            ]
-            chart_config["data"]["datasets"][0]["data"] = [
-                entry["count"] for entry in history
-            ]
-            config_param = urllib.parse.quote(json.dumps(chart_config))
-            url = f"https://quickchart.io/chart?c={config_param}"
-            if len(url) > 2048:
-                logger.warning(
-                    "QuickChart URL still too long, not attaching chart image."
-                )
-                return None
-        return url
-
     def predict_milestone(self, target: int) -> Tuple[Optional[datetime], bool]:
-        """Predict when the next milestone will be reached"""
         if len(self.data["historical_counts"]) < 2:
             return None, False
-
         oldest = min(self.data["historical_counts"], key=lambda x: x["timestamp"])
         newest = max(self.data["historical_counts"], key=lambda x: x["timestamp"])
         time_diff = newest["timestamp"] - oldest["timestamp"]
         count_diff = newest["count"] - oldest["count"]
-
         if time_diff <= 0:
             return None, False
-
         daily_rate = (count_diff / time_diff) * 86400
         remaining_count = target - newest["count"]
-
         if remaining_count <= 0:
             return None, True
-
         if daily_rate <= 0:
             return None, False
-
         days_until = remaining_count / daily_rate
         predicted_date = datetime.now(timezone.utc) + timedelta(days=days_until)
-
         return predicted_date, False
+
+    def format_time_ago(self, delta: timedelta) -> str:
+        days = delta.days
+        hours = delta.seconds // 3600
+        minutes = (delta.seconds % 3600) // 60
+        if days > 0:
+            return f"{days}d {hours}h"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+
+    def generate_growth_graph(self, max_days=30) -> discord.File:
+        """Generate a beautiful file count graph for the last max_days."""
+        # Prepare data
+        if not self.data["historical_counts"]:
+            # Dummy graph if empty
+            fig, ax = plt.subplots(figsize=(10, 5), layout="constrained")
+            ax.text(
+                0.5,
+                0.5,
+                "No Data",
+                ha="center",
+                va="center",
+                fontsize=30,
+                color="#FFCD3F",
+            )
+            plt.axis("off")
+        else:
+            end_ts = self.data["historical_counts"][-1]["timestamp"]
+            start_ts = end_ts - max_days * 86400
+            data = [
+                e for e in self.data["historical_counts"] if e["timestamp"] >= start_ts
+            ]
+            if len(data) < 2:
+                data = self.data["historical_counts"][-2:]
+
+            dates = [datetime.fromtimestamp(e["timestamp"]) for e in data]
+            counts = [e["count"] for e in data]
+
+            # Style
+            plt.style.use("dark_background")
+            fig, ax = plt.subplots(figsize=(10, 5), layout="constrained")
+            # Fill under the curve for accent
+            ax.fill_between(dates, counts, color="#FFCD3F", alpha=0.10, zorder=2)
+            # Main line
+            ax.plot(
+                dates,
+                counts,
+                color="#FFCD3F",
+                linewidth=3,
+                marker="o",
+                markersize=7,
+                markerfacecolor="#FFF9C4",
+                markeredgewidth=2,
+                zorder=3,
+            )
+            # Grid, rounded corners, cleaner ticks
+            ax.grid(True, linestyle="--", alpha=0.18, zorder=1)
+            ax.set_facecolor("#181825")
+            fig.patch.set_facecolor("#181825")
+
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.spines["left"].set_color("#45475A")
+            ax.spines["bottom"].set_color("#45475A")
+            for spine in ax.spines.values():
+                spine.set_linewidth(2)
+
+            ax.set_title(
+                "Ente.io File Count Growth",
+                fontsize=20,
+                pad=18,
+                color="#FFCD3F",
+                weight="bold",
+            )
+            ax.set_ylabel("Files", fontsize=14, color="#cdd6f4")
+            ax.set_xlabel("Date", fontsize=14, color="#cdd6f4")
+            ax.tick_params(colors="#a6adc8", labelsize=12)
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+            fig.autofmt_xdate()
+
+            # Make y-axis numbers prettier
+            ax.yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda x, _: f"{int(x):,}")
+            )
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=130, bbox_inches="tight", transparent=True)
+        buf.seek(0)
+        plt.close(fig)
+        return discord.File(buf, "ente_growth.png")
 
     @tasks.loop(seconds=300)
     async def monitor_files(self):
-        """Monitor and update the file count in channel name and bot presence."""
         try:
             channel = self.bot.get_channel(int(self.bot.config["channel_id"]))
             if not channel:
                 return
-
             current_count = await self.fetch_file_count()
             if current_count is not None and current_count != self.last_count:
                 await self.safe_channel_edit(channel, f"📷 {current_count:,} Files")
-
                 activity = discord.Activity(
                     type=discord.ActivityType.custom,
                     name=f"Securing {current_count:,} files",
@@ -305,7 +334,6 @@ class FileTracker(commands.Cog):
                     status=discord.Status.online, activity=activity
                 )
                 self.last_count = current_count
-
                 logger.info(
                     f"Current minimum edit interval: {self.minimum_edit_interval.total_seconds()}s"
                 )
@@ -335,7 +363,6 @@ class FileTracker(commands.Cog):
         try:
             user_id = interaction.user.id
             current_time = datetime.now(timezone.utc)
-
             if user_id in self.button_cooldowns:
                 time_diff = (
                     current_time - self.button_cooldowns[user_id]
@@ -346,31 +373,25 @@ class FileTracker(commands.Cog):
                         ephemeral=True,
                     )
                     return
-
             await interaction.response.defer()
             self.button_cooldowns[user_id] = current_time
-
             current_count = await self.fetch_file_count()
             if current_count is not None:
                 new_milestones = []
                 increase_text = ""
                 daily_growth = ""
                 milestone_text = ""
-
                 if self.data["last_count"] is not None:
                     increase = current_count - self.data["last_count"]
                     percent_increase = (increase / self.data["last_count"]) * 100
-
                     arrow = "↑" if increase >= 0 else "↓"
                     increase_text = f"**{increase:+,}** ({percent_increase:+.2f}%)"
-
                 week_ago = (current_time - timedelta(days=7)).timestamp()
                 week_data = [
                     entry
                     for entry in self.data["historical_counts"]
                     if entry["timestamp"] > week_ago
                 ]
-
                 weekly_growth = ""
                 if len(week_data) > 0:
                     total_count = sum(entry["count"] for entry in week_data)
@@ -381,10 +402,8 @@ class FileTracker(commands.Cog):
                         if average_count > 0
                         else 0
                     )
-
                     week_arrow = "↑" if week_increase >= 0 else "↓"
                     weekly_growth = f"**{round(week_increase):,}** ({'+' if week_percent > 0 else ''}{round(week_percent, 2):,.2f}%)"
-
                 daily_growth = ""
                 if len(self.data["historical_counts"]) >= 2:
                     oldest_entry = min(
@@ -397,34 +416,27 @@ class FileTracker(commands.Cog):
                         total_increase = current_count - oldest_entry["count"]
                         daily_avg = total_increase / days_diff
                         daily_growth = f"**{daily_avg:+,.0f}** files/day"
-
                 files_embed = discord.Embed(
                     title="🦆 Ente Files Statistics", color=0xFFCD3F
                 )
-
                 files_embed.add_field(
                     name="Protected Files",
                     value=f"🔐 **{current_count:,}**",
                     inline=False,
                 )
-
                 if increase_text:
                     files_embed.add_field(
                         name=f"{arrow} Files changed", value=increase_text, inline=True
                     )
-
                 if weekly_growth:
                     files_embed.add_field(
                         name=f"{week_arrow} Weekly Growth",
                         value=weekly_growth,
                         inline=True,
                     )
-
-                if daily_growth:
-                    files_embed.add_field(
-                        name="📈 Daily Average", value=daily_growth, inline=True
-                    )
-
+                files_embed.add_field(
+                    name="📈 Daily Average", value=daily_growth or "N/A", inline=True
+                )
                 next_milestone = next(
                     (m for m in self.MILESTONES if m > current_count), None
                 )
@@ -439,10 +451,11 @@ class FileTracker(commands.Cog):
                             f"**{next_milestone:,}** files\n"
                             f"~{int(days_until)} days (<t:{predicted_timestamp}:D>)"
                         )
-                        files_embed.add_field(
-                            name="🎯 Next Milestone", value=milestone_text, inline=False
-                        )
-
+                files_embed.add_field(
+                    name="🎯 Next Milestone",
+                    value=milestone_text or "N/A",
+                    inline=False,
+                )
                 if new_milestones:
                     celebration = "\n".join(
                         f"🎉 **{m:,}** files!" for m in new_milestones[-5:]
@@ -450,42 +463,35 @@ class FileTracker(commands.Cog):
                     files_embed.add_field(
                         name="Achievements Unlocked!", value=celebration, inline=False
                     )
-
                 current_timestamp = int(current_time.timestamp())
                 files_embed.add_field(
                     name="Last Updated",
                     value=f"<t:{current_timestamp}:R>",
                     inline=False,
                 )
-
                 self.data["last_count"] = current_count
                 self.data["last_update"] = current_timestamp
-
                 current_data = {"timestamp": current_timestamp, "count": current_count}
                 self.data["historical_counts"].append(current_data)
-
-                cutoff = current_timestamp - (30 * 24 * 60 * 60)
+                # Only keep 60 days of data for graph clarity
+                cutoff = current_timestamp - (60 * 24 * 60 * 60)
                 self.data["historical_counts"] = [
                     entry
                     for entry in self.data["historical_counts"]
                     if entry["timestamp"] > cutoff
                 ]
-
                 self.save_data()
-
-                # Add QuickChart.io graph image
-                chart_url = self.quickchart_url()
-                if chart_url:
-                    files_embed.set_image(url=chart_url)
-
+                graph_file = self.generate_growth_graph(max_days=30)
                 view = PersistentView()
                 view.add_item(RefreshButton())
-
                 try:
-                    await interaction.message.edit(embed=files_embed, view=view)
-                except Exception as e:
-                    await interaction.followup.send(embed=files_embed, view=view)
-
+                    await interaction.message.edit(
+                        embed=files_embed, view=view, attachments=[graph_file]
+                    )
+                except Exception:
+                    await interaction.followup.send(
+                        embed=files_embed, view=view, file=graph_file
+                    )
             else:
                 await interaction.followup.send(
                     "Failed to fetch the current file count. Please try again later.",
@@ -500,18 +506,6 @@ class FileTracker(commands.Cog):
                 )
             except:
                 pass
-
-    def format_time_ago(self, delta: timedelta) -> str:
-        days = delta.days
-        hours = delta.seconds // 3600
-        minutes = (delta.seconds % 3600) // 60
-
-        if days > 0:
-            return f"{days}d {hours}h"
-        elif hours > 0:
-            return f"{hours}h {minutes}m"
-        else:
-            return f"{minutes}m"
 
 
 async def setup(bot):
