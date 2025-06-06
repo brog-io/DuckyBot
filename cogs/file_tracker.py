@@ -210,23 +210,21 @@ class FileTracker(commands.Cog):
 
         return None
 
-    def quickchart_url(self):
-        """Return a QuickChart.io URL for the historical growth graph."""
-        if len(self.data["historical_counts"]) < 2:
+    def quickchart_url(self, max_points=30):
+        history = self.data["historical_counts"][-max_points:]
+        if len(history) < 1:
             return None
         chart_config = {
             "type": "line",
             "data": {
                 "labels": [
                     datetime.fromtimestamp(entry["timestamp"]).strftime("%b %d")
-                    for entry in self.data["historical_counts"]
+                    for entry in history
                 ],
                 "datasets": [
                     {
                         "label": "Files",
-                        "data": [
-                            entry["count"] for entry in self.data["historical_counts"]
-                        ],
+                        "data": [entry["count"] for entry in history],
                         "fill": False,
                         "borderColor": "rgb(255,205,63)",
                         "tension": 0.2,
@@ -235,14 +233,29 @@ class FileTracker(commands.Cog):
             },
             "options": {
                 "plugins": {"legend": {"display": False}},
-                "scales": {
-                    "y": {"beginAtZero": True, "ticks": {"color": "white"}},
-                    "x": {"ticks": {"color": "white"}},
-                },
+                "scales": {"y": {"beginAtZero": True}},
             },
         }
         config_param = urllib.parse.quote(json.dumps(chart_config))
-        return f"https://quickchart.io/chart?c={config_param}"
+        url = f"https://quickchart.io/chart?c={config_param}"
+        # Discord image URLs must be <= 2048 characters
+        if len(url) > 2048:
+            history = self.data["historical_counts"][-10:]
+            chart_config["data"]["labels"] = [
+                datetime.fromtimestamp(entry["timestamp"]).strftime("%b %d")
+                for entry in history
+            ]
+            chart_config["data"]["datasets"][0]["data"] = [
+                entry["count"] for entry in history
+            ]
+            config_param = urllib.parse.quote(json.dumps(chart_config))
+            url = f"https://quickchart.io/chart?c={config_param}"
+            if len(url) > 2048:
+                logger.warning(
+                    "QuickChart URL still too long, not attaching chart image."
+                )
+                return None
+        return url
 
     def predict_milestone(self, target: int) -> Tuple[Optional[datetime], bool]:
         """Predict when the next milestone will be reached"""
