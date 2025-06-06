@@ -139,8 +139,9 @@ class SelfHelp(commands.Cog):
     def should_show_help_button(self, channel_id: int) -> bool:
         return channel_id not in SOLVED_ONLY_CHANNEL_IDS
 
-
-    async def query_api(self, title: str, body: str = "", tags: list[str] = None) -> str:
+    async def query_api(
+        self, title: str, body: str = "", tags: list[str] = None
+    ) -> str:
         tags_text = ", ".join(tags) if tags else "None"
         prompt = (
             f"Title: {title}\n"
@@ -199,7 +200,7 @@ class SelfHelp(commands.Cog):
                 else ""
             )
 
-            answer = await self.query_api(query, context)
+            answer = await self.query_api(query, body, tag_names)
             show_help = self.should_show_help_button(thread.parent_id)
             await thread.send(
                 answer,
