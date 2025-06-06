@@ -236,10 +236,8 @@ class FileTracker(commands.Cog):
             return f"{minutes}m"
 
     def generate_growth_graph(self, max_days=30) -> discord.File:
-        """Generate a beautiful file count graph for the last max_days."""
-        # Prepare data
+        """Generate a beautiful file count graph, zoomed on the actual range."""
         if not self.data["historical_counts"]:
-            # Dummy graph if empty
             fig, ax = plt.subplots(figsize=(10, 5), layout="constrained")
             ax.text(
                 0.5,
@@ -259,16 +257,12 @@ class FileTracker(commands.Cog):
             ]
             if len(data) < 2:
                 data = self.data["historical_counts"][-2:]
-
             dates = [datetime.fromtimestamp(e["timestamp"]) for e in data]
             counts = [e["count"] for e in data]
 
-            # Style
             plt.style.use("dark_background")
             fig, ax = plt.subplots(figsize=(10, 5), layout="constrained")
-            # Fill under the curve for accent
             ax.fill_between(dates, counts, color="#FFCD3F", alpha=0.10, zorder=2)
-            # Main line
             ax.plot(
                 dates,
                 counts,
@@ -280,18 +274,15 @@ class FileTracker(commands.Cog):
                 markeredgewidth=2,
                 zorder=3,
             )
-            # Grid, rounded corners, cleaner ticks
             ax.grid(True, linestyle="--", alpha=0.18, zorder=1)
             ax.set_facecolor("#181825")
             fig.patch.set_facecolor("#181825")
-
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
             ax.spines["left"].set_color("#45475A")
             ax.spines["bottom"].set_color("#45475A")
             for spine in ax.spines.values():
                 spine.set_linewidth(2)
-
             ax.set_title(
                 "Ente.io File Count Growth",
                 fontsize=20,
@@ -305,11 +296,14 @@ class FileTracker(commands.Cog):
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
             fig.autofmt_xdate()
 
-            # Make y-axis numbers prettier
+            # Smart Y-axis "zoom": show just above/below the actual range
+            y_min = min(counts)
+            y_max = max(counts)
+            buffer = max(1, int((y_max - y_min) * 0.12))  # 12% buffer or at least 1
+            ax.set_ylim(y_min - buffer, y_max + buffer)
             ax.yaxis.set_major_formatter(
                 mticker.FuncFormatter(lambda x, _: f"{int(x):,}")
             )
-
         buf = io.BytesIO()
         plt.savefig(buf, format="png", dpi=130, bbox_inches="tight", transparent=True)
         buf.seek(0)
@@ -482,6 +476,9 @@ class FileTracker(commands.Cog):
                 ]
                 self.save_data()
                 graph_file = self.generate_growth_graph(max_days=30)
+                files_embed.set_image(
+                    url="attachment://ente_growth.png"
+                )  # <== THIS LINE EMBEDS THE FILE
                 view = PersistentView()
                 view.add_item(RefreshButton())
                 try:
