@@ -139,11 +139,17 @@ class SelfHelp(commands.Cog):
     def should_show_help_button(self, channel_id: int) -> bool:
         return channel_id not in SOLVED_ONLY_CHANNEL_IDS
 
-    async def query_api(self, query: str, extra: str = "") -> str:
-        payload = {
-            "query": f"{query}\n{extra}".strip(),
-            "key": API_KEY,
-        }
+
+    async def query_api(self, title: str, body: str = "", tags: list[str] = None) -> str:
+        tags_text = ", ".join(tags) if tags else "None"
+        prompt = (
+            f"Title: {title}\n"
+            f"Tags: {tags_text}\n"
+            f"Message: {body.strip() or 'No content provided.'}"
+        )
+
+        payload = {"query": prompt, "key": API_KEY}
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.poggers.win/api/ente/docs-search", json=payload
