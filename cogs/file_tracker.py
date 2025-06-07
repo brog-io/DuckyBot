@@ -9,10 +9,6 @@ from typing import Optional, Tuple
 from aiohttp import ClientTimeout
 import json
 import os
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import matplotlib.ticker as mticker
-import io
 
 logger = logging.getLogger(__name__)
 
@@ -235,81 +231,6 @@ class FileTracker(commands.Cog):
         else:
             return f"{minutes}m"
 
-    def generate_growth_graph(self, max_days=30) -> discord.File:
-        """Generate a beautiful file count graph, zoomed on the actual range."""
-        if not self.data["historical_counts"]:
-            fig, ax = plt.subplots(figsize=(10, 5), layout="constrained")
-            ax.text(
-                0.5,
-                0.5,
-                "No Data",
-                ha="center",
-                va="center",
-                fontsize=30,
-                color="#FFCD3F",
-            )
-            plt.axis("off")
-        else:
-            end_ts = self.data["historical_counts"][-1]["timestamp"]
-            start_ts = end_ts - max_days * 86400
-            data = [
-                e for e in self.data["historical_counts"] if e["timestamp"] >= start_ts
-            ]
-            if len(data) < 2:
-                data = self.data["historical_counts"][-2:]
-            dates = [datetime.fromtimestamp(e["timestamp"]) for e in data]
-            counts = [e["count"] for e in data]
-
-            plt.style.use("dark_background")
-            fig, ax = plt.subplots(figsize=(10, 5), layout="constrained")
-            ax.fill_between(dates, counts, color="#FFCD3F", alpha=0.10, zorder=2)
-            ax.plot(
-                dates,
-                counts,
-                color="#FFCD3F",
-                linewidth=3,
-                marker="o",
-                markersize=7,
-                markerfacecolor="#FFF9C4",
-                markeredgewidth=2,
-                zorder=3,
-            )
-            ax.grid(True, linestyle="--", alpha=0.18, zorder=1)
-            ax.set_facecolor("#181825")
-            fig.patch.set_facecolor("#181825")
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.spines["left"].set_color("#45475A")
-            ax.spines["bottom"].set_color("#45475A")
-            for spine in ax.spines.values():
-                spine.set_linewidth(2)
-            ax.set_title(
-                "Ente.io File Count Growth",
-                fontsize=20,
-                pad=18,
-                color="#FFCD3F",
-                weight="bold",
-            )
-            ax.set_ylabel("Files", fontsize=14, color="#cdd6f4")
-            ax.set_xlabel("Date", fontsize=14, color="#cdd6f4")
-            ax.tick_params(colors="#a6adc8", labelsize=12)
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-            fig.autofmt_xdate()
-
-            # Smart Y-axis "zoom": show just above/below the actual range
-            y_min = min(counts)
-            y_max = max(counts)
-            buffer = max(1, int((y_max - y_min) * 0.12))  # 12% buffer or at least 1
-            ax.set_ylim(y_min - buffer, y_max + buffer)
-            ax.yaxis.set_major_formatter(
-                mticker.FuncFormatter(lambda x, _: f"{int(x):,}")
-            )
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png", dpi=130, bbox_inches="tight", transparent=True)
-        buf.seek(0)
-        plt.close(fig)
-        return discord.File(buf, "ente_growth.png")
-
     @tasks.loop(seconds=300)
     async def monitor_files(self):
         try:
@@ -371,9 +292,7 @@ class FileTracker(commands.Cog):
             self.button_cooldowns[user_id] = current_time
             current_count = await self.fetch_file_count()
             if current_count is not None:
-                new_milestones = []
                 increase_text = ""
-                daily_growth = ""
                 milestone_text = ""
                 if self.data["last_count"] is not None:
                     increase = current_count - self.data["last_count"]
@@ -450,13 +369,6 @@ class FileTracker(commands.Cog):
                     value=milestone_text or "N/A",
                     inline=False,
                 )
-                if new_milestones:
-                    celebration = "\n".join(
-                        f"🎉 **{m:,}** files!" for m in new_milestones[-5:]
-                    )
-                    files_embed.add_field(
-                        name="Achievements Unlocked!", value=celebration, inline=False
-                    )
                 current_timestamp = int(current_time.timestamp())
                 files_embed.add_field(
                     name="Last Updated",
@@ -467,28 +379,19 @@ class FileTracker(commands.Cog):
                 self.data["last_update"] = current_timestamp
                 current_data = {"timestamp": current_timestamp, "count": current_count}
                 self.data["historical_counts"].append(current_data)
-                # Only keep 60 days of data for graph clarity
-                cutoff = current_timestamp - (60 * 24 * 60 * 60)
+                cutoff = current_timestamp - (30 * 24 * 60 * 60)
                 self.data["historical_counts"] = [
                     entry
                     for entry in self.data["historical_counts"]
                     if entry["timestamp"] > cutoff
                 ]
                 self.save_data()
-                graph_file = self.generate_growth_graph(max_days=30)
-                files_embed.set_image(
-                    url="attachment://ente_growth.png"
-                )  # <== THIS LINE EMBEDS THE FILE
                 view = PersistentView()
                 view.add_item(RefreshButton())
                 try:
-                    await interaction.message.edit(
-                        embed=files_embed, view=view, attachments=[graph_file]
-                    )
+                    await interaction.message.edit(embed=files_embed, view=view)
                 except Exception:
-                    await interaction.followup.send(
-                        embed=files_embed, view=view, file=graph_file
-                    )
+                    await interaction.followup.send(embed=files_embed, view=view)
             else:
                 await interaction.followup.send(
                     "Failed to fetch the current file count. Please try again later.",
