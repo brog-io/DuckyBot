@@ -128,15 +128,15 @@ async def fetch_og_image(url):
 
 
 # HTML to Discord Markdown
-
-
 def html_to_discord_md(html: str) -> str:
     if not html:
         return ""
-    # Replace <br> and <br/> with newlines
+    # Replace <br> and <br/> with single newlines
     html = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
-    # Replace </p> and </div> with double newlines
-    html = re.sub(r"</?(p|div)>", "\n\n", html, flags=re.IGNORECASE)
+    # Replace closing </p> and </div> with a single newline (not both)
+    html = re.sub(r"</(p|div)>", "\n", html, flags=re.IGNORECASE)
+    # Remove opening <p>, <div>
+    html = re.sub(r"<(p|div)[^>]*>", "", html, flags=re.IGNORECASE)
     # Lists: turn <li>…</li> into • …
     html = re.sub(r"<li>(.*?)</li>", r"• \1\n", html, flags=re.IGNORECASE)
     # Links: <a href="url">text</a> to [text](url)
@@ -149,7 +149,12 @@ def html_to_discord_md(html: str) -> str:
     # Remove all remaining tags
     html = re.sub(r"<.*?>", "", html)
     # Unescape HTML entities
-    return unescape(html).strip()
+    text = unescape(html).strip()
+    # Collapse 3+ newlines into two, and 2+ into one
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)  # Remove trailing spaces on lines
+    text = re.sub(r"\n{2,}", "\n\n", text)  # Only ever allow double newlines
+    return text
 
 
 def strip_tags(html: str) -> str:
