@@ -131,29 +131,35 @@ async def fetch_og_image(url):
 def html_to_discord_md(html: str) -> str:
     if not html:
         return ""
-    # Replace <br> and <br/> with single newlines
+    # Replace <br> and <br/> with single newline
     html = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
-    # Replace closing </p> and </div> with a single newline (not both)
+    # Replace block-ending tags with newline
     html = re.sub(r"</(p|div)>", "\n", html, flags=re.IGNORECASE)
-    # Remove opening <p>, <div>
+    # Remove block-opening tags
     html = re.sub(r"<(p|div)[^>]*>", "", html, flags=re.IGNORECASE)
-    # Lists: turn <li>…</li> into • …
+    # Lists: <li>...</li> becomes bullet points
     html = re.sub(r"<li>(.*?)</li>", r"• \1\n", html, flags=re.IGNORECASE)
     # Links: <a href="url">text</a> to [text](url)
     html = re.sub(
         r'<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-        lambda m: f"[{strip_tags(m.group(2))}]({m.group(1)})",
+        lambda m: f"[{strip_tags(m.group(2)).strip()}]({m.group(1)})",
         html,
         flags=re.IGNORECASE,
     )
-    # Remove all remaining tags
+    # Remove all other tags
     html = re.sub(r"<.*?>", "", html)
-    # Unescape HTML entities
-    text = unescape(html).strip()
-    # Collapse 3+ newlines into two, and 2+ into one
+    # Decode HTML entities
+    text = unescape(html)
+    # Collapse 3+ newlines to 2
     text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"[ \t]+\n", "\n", text)  # Remove trailing spaces on lines
-    text = re.sub(r"\n{2,}", "\n\n", text)  # Only ever allow double newlines
+    # Strip trailing whitespace on each line
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    # Remove leading/trailing blank lines
+    text = text.strip("\n")
+    # Ensure paragraphs have double newlines
+    text = re.sub(r"([^\n])\n([^\n])", r"\1\n\n\2", text)
+    # Final collapse: more than 2 newlines to 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text
 
 
