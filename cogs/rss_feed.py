@@ -7,9 +7,9 @@ import re
 from dateutil import parser as dateparser
 import aiohttp
 import logging
+from html import unescape
 
 logger = logging.getLogger(__name__)
-
 
 BLOG_FEED = {
     "url": "https://ente.io/rss.xml",
@@ -29,10 +29,6 @@ STATE_FILE = "ente_rss_state.json"
 
 
 def get_first_str(val):
-    """
-    Return the first string value from a field that may be a string, list, or dict.
-    Used for RSS fields like summary, description, or content.
-    """
     if isinstance(val, list) and val:
         item = val[0]
         if isinstance(item, dict) and "value" in item:
@@ -42,10 +38,6 @@ def get_first_str(val):
 
 
 def load_state():
-    """
-    Load the state file tracking the last processed entry for each feed.
-    On first run, initializes to the latest entry in each feed.
-    """
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
@@ -63,16 +55,11 @@ def load_state():
 
 
 def save_state(state):
-    """Save the current state of the feeds to a JSON file."""
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
 
 class LinkButton(discord.ui.View):
-    """
-    Discord UI view containing a single link button.
-    """
-
     def __init__(self, url: str, label: str):
         super().__init__(timeout=None)
         self.add_item(
@@ -81,10 +68,6 @@ class LinkButton(discord.ui.View):
 
 
 async def extract_image_url(entry, fallback_url=None):
-    """
-    Extract an image URL from an RSS feed entry.
-    Tries all common RSS fields and as fallback fetches og:image from the entry's web page.
-    """
     img_url = entry.get("media_content__@__url")
     img_type = entry.get("media_content__@__type", "")
     if img_url and img_type.startswith("image/"):
@@ -128,10 +111,6 @@ async def extract_image_url(entry, fallback_url=None):
 
 
 async def fetch_og_image(url):
-    """
-    Fetch the first <meta property="og:image"> from the HTML of a URL.
-    Used as a fallback if no image is found in RSS.
-    """
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
@@ -148,32 +127,50 @@ async def fetch_og_image(url):
     return None
 
 
-class RSSFeedCog(commands.Cog):
-    """
-    A cog that monitors multiple RSS feeds and posts updates to different Discord channels:
-    - Blog posts are posted as new threads in a forum channel with automatic embeds.
-    - Mastodon posts are posted as rich embeds in a text channel.
-    """
+# HTML to Discord Markdown
 
+
+def html_to_discord_md(html: str) -> str:
+    if not html:
+        return ""
+    # Replace <br> and <br/> with newlines
+    html = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    # Replace </p> and </div> with double newlines
+    html = re.sub(r"</?(p|div)>", "\n\n", html, flags=re.IGNORECASE)
+    # Lists: turn <li>…</li> into • …
+    html = re.sub(r"<li>(.*?)</li>", r"• \1\n", html, flags=re.IGNORECASE)
+    # Links: <a href="url">text</a> to [text](url)
+    html = re.sub(
+        r'<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        lambda m: f"[{strip_tags(m.group(2))}]({m.group(1)})",
+        html,
+        flags=re.IGNORECASE,
+    )
+    # Remove all remaining tags
+    html = re.sub(r"<.*?>", "", html)
+    # Unescape HTML entities
+    return unescape(html).strip()
+
+
+def strip_tags(html: str) -> str:
+    return re.sub(r"<.*?>", "", html)
+
+
+class RSSFeedCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state = load_state()
         self.check_feeds.start()
 
     def cog_unload(self):
-        """Cancel the background feed checking task when the cog is unloaded."""
         self.check_feeds.cancel()
 
     @tasks.loop(minutes=5)
     async def check_feeds(self):
-        """
-        Periodically check each configured RSS feed for new entries.
-        For each new entry, post to the configured channel (forum for blog, text for Mastodon).
-        """
         await self.bot.wait_until_ready()
         changed = False
 
-        # --- BLOG FEED: post to forum channel as new thread ---
+        # --- BLOG FEED ---
         try:
             d = feedparser.parse(BLOG_FEED["url"])
             if d.entries:
@@ -196,7 +193,7 @@ class RSSFeedCog(commands.Cog):
         except Exception as e:
             logger.error(f"RSS error for blog: {e}")
 
-        # --- MASTODON FEED: post as embed to text channel ---
+        # --- MASTODON FEED ---
         try:
             d = feedparser.parse(MASTODON_FEED["url"])
             author_icon = self._get_feed_icon(d)
@@ -229,21 +226,13 @@ class RSSFeedCog(commands.Cog):
 
     @staticmethod
     def _get_feed_icon(d):
-        """
-        Extract the <image><url> from the feed, or return the fallback.
-        """
         if hasattr(d.feed, "image") and hasattr(d.feed.image, "href"):
             return d.feed.image.href
         return ENTE_ICON_URL
 
     async def send_blog_post(self, forum_channel, entry, role_mention: str):
-        """
-        Post a blog entry as a formatted message in a new forum thread.
-        Discord will automatically generate the embed from the URL.
-        """
         title = get_first_str(entry.title)
         url = entry.link
-
         if forum_channel and isinstance(forum_channel, discord.ForumChannel):
             await forum_channel.create_thread(
                 name=title[:95], content=f"📰 [**{title}**]({url}) **|** {role_mention}"
@@ -257,16 +246,14 @@ class RSSFeedCog(commands.Cog):
         button_text: str,
         author_icon: str,
     ):
-        """
-        Send a Mastodon post as a rich embed to the specified text channel.
-        """
         author = get_first_str(entry.get("author", "Ente(@fosstodon.org)"))
         summary = get_first_str(entry.get("summary", ""))
         link = entry.link
         published = entry.get("published", None)
-        clean_text = (
-            re.sub(r"<.*?>", "", summary).strip() if isinstance(summary, str) else ""
-        )
+
+        # format HTML to Discord markdown
+        clean_text = html_to_discord_md(summary)
+
         image_url = await extract_image_url(entry)
         timestamp = None
         if published:
@@ -287,7 +274,4 @@ class RSSFeedCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    """
-    Setup function for adding the RSSFeedCog to the bot.
-    """
     await bot.add_cog(RSSFeedCog(bot))
