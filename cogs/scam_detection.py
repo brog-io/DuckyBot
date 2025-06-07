@@ -121,10 +121,16 @@ class ModerationButtons(View):
         super().__init__(timeout=None)
         self.author = author
 
+    async def disable_all(self, interaction):
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+
     @discord.ui.button(label="Remove Timeout", style=discord.ButtonStyle.primary)
     async def remove_timeout(self, interaction: discord.Interaction, button: Button):
         if not interaction.user.guild_permissions.moderate_members:
             await interaction.response.send_message("No permission.", ephemeral=True)
+            await self.disable_all(interaction)
             return
         try:
             await self.author.timeout(
@@ -137,6 +143,7 @@ class ModerationButtons(View):
             await interaction.response.send_message(
                 f"Failed to remove timeout: {e}", ephemeral=True
             )
+        await self.disable_all(interaction)
 
     @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary)
     async def kick_user(self, interaction: discord.Interaction, button: Button):
@@ -147,6 +154,7 @@ class ModerationButtons(View):
             )
         else:
             await interaction.response.send_message("No permission.", ephemeral=True)
+        await self.disable_all(interaction)
 
     @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
     async def ban_user(self, interaction: discord.Interaction, button: Button):
@@ -157,6 +165,7 @@ class ModerationButtons(View):
             )
         else:
             await interaction.response.send_message("No permission.", ephemeral=True)
+        await self.disable_all(interaction)
 
 
 class ScamDetection(commands.Cog):
@@ -205,14 +214,14 @@ class ScamDetection(commands.Cog):
                     final_domain == scam or final_domain.endswith("." + scam)
                     for scam in self.scam_domains
                 ):
-                    await self._handle_scam(message, content, reason="domain")
+                    await self._handle_scam(message, content)
                     return
             else:
                 if any(
                     domain == scam or domain.endswith("." + scam)
                     for scam in self.scam_domains
                 ):
-                    await self._handle_scam(message, content, reason="domain")
+                    await self._handle_scam(message, content)
                     return
 
         # --- AI check (stricter, for spammy/young/unknown users) ---
@@ -235,9 +244,9 @@ class ScamDetection(commands.Cog):
                                 is_scam = await check_scam_with_openai(content)
                                 self._scam_cache[content] = is_scam
                             if is_scam:
-                                await self._handle_scam(message, content, reason="ai")
+                                await self._handle_scam(message, content)
 
-    async def _handle_scam(self, message, content, reason="unknown"):
+    async def _handle_scam(self, message, content):
         try:
             await message.delete()
         except Exception as e:
@@ -254,7 +263,10 @@ class ScamDetection(commands.Cog):
         if log_channel:
             embed = discord.Embed(
                 title="🚨 Scam Message Detected & Auto-Deleted",
-                description=f"{message.author.mention} in {message.channel.mention} was **timed out for 1 day**.\n\n**Reason:** `{reason}`\n\n**Message content:**\n{content}",
+                description=(
+                    f"{message.author.mention} in {message.channel.mention} was **timed out for 1 day**.\n\n"
+                    f"**Message content:**\n{content}"
+                ),
                 color=discord.Color.red(),
             )
             embed.set_footer(text=f"User ID: {message.author.id}")
