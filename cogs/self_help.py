@@ -189,7 +189,9 @@ class SelfHelp(commands.Cog):
                 for thread in guild.threads:
                     if thread.parent_id == channel.id and not thread.locked:
                         self.thread_activity[thread.id] = (
-                            thread.last_message.created_at or thread.created_at
+                            thread.last_message.created_at
+                            if thread.last_message
+                            else thread.created_at
                         )
         self.save_activity_data()
 
