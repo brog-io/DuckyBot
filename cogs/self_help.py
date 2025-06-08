@@ -144,12 +144,17 @@ class SelfHelp(commands.Cog):
                 with open(ACTIVITY_FILE, "r") as f:
                     raw = json.load(f)
                     fixed = {}
-                    for tid, ts in raw.items():
+                    for tid, data in raw.items():
                         try:
-                            fixed[int(tid)] = datetime.fromisoformat(ts)
+                            fixed[int(tid)] = {
+                                "last_active": datetime.fromisoformat(
+                                    data["last_active"]
+                                ),
+                                "owner_id": data["owner_id"],
+                            }
                         except Exception as e:
                             logger.warning(
-                                f"Skipping thread {tid} due to invalid timestamp: {ts}"
+                                f"Skipping thread {tid} due to invalid data: {data}"
                             )
                     return fixed
             except Exception as e:
@@ -161,7 +166,10 @@ class SelfHelp(commands.Cog):
             with open(ACTIVITY_FILE, "w") as f:
                 json.dump(
                     {
-                        str(tid): ts.isoformat()
+                        str(tid): {
+                            "last_active": ts["last_active"].isoformat(),
+                            "owner_id": ts["owner_id"],
+                        }
                         for tid, ts in self.thread_activity.items()
                     },
                     f,
@@ -194,11 +202,14 @@ class SelfHelp(commands.Cog):
                     continue
                 for thread in guild.threads:
                     if thread.parent_id == channel.id and not thread.locked:
-                        self.thread_activity[thread.id] = (
-                            thread.last_message.created_at
-                            if thread.last_message
-                            else thread.created_at
-                        )
+                        self.thread_activity[thread.id] = {
+                            "last_active": (
+                                thread.last_message.created_at
+                                if thread.last_message
+                                else thread.created_at
+                            ),
+                            "owner_id": thread.owner_id,
+                        }
         self.save_activity_data()
 
     @commands.Cog.listener()
@@ -209,7 +220,10 @@ class SelfHelp(commands.Cog):
             return
         if message.channel.parent_id not in SELFHELP_CHANNEL_IDS:
             return
-        self.thread_activity[message.channel.id] = datetime.utcnow()
+        self.thread_activity[message.channel.id] = {
+            "last_active": datetime.utcnow(),
+            "owner_id": message.channel.owner_id,
+        }
         self.save_activity_data()
 
     @commands.Cog.listener()
@@ -293,18 +307,19 @@ class SelfHelp(commands.Cog):
     @tasks.loop(minutes=30)
     async def check_stale_threads(self):
         now = datetime.utcnow()
-        for thread_id, last_active in list(self.thread_activity.items()):
+        for thread_id, data in list(self.thread_activity.items()):
             thread = self.bot.get_channel(thread_id)
             if not isinstance(thread, discord.Thread):
                 continue
             if thread.locked or thread.parent_id not in SELFHELP_CHANNEL_IDS:
                 continue
+            last_active = data["last_active"]
+            owner_id = data["owner_id"]
             inactive_time = (now - last_active).days
             try:
                 if inactive_time == 3:
                     await thread.send(
-                        f"🕒 <@{thread.owner_id}>, this thread hasn’t had activity in a few days. "
-                        "If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
+                        f"🕒 <@{owner_id}>, this thread hasn’t had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
                     )
                 elif inactive_time >= 6:
                     await thread.send(
