@@ -1,11 +1,12 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import aiohttp
 import os
 import logging
 import asyncio
 from discord import ui
 from dotenv import load_dotenv
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +161,10 @@ class SupportView(ui.View):
 class SelfHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
         bot.add_view(SupportView(thread_owner=0, parent_channel_id=0))
         self.processed_threads = set()
+        self.thread_activity = {}
+        self.check_stale_threads.start()
 
     def should_show_help_button(self, channel_id: int) -> bool:
         return channel_id not in SOLVED_ONLY_CHANNEL_IDS
@@ -198,6 +200,8 @@ class SelfHelp(commands.Cog):
         if thread.id in self.processed_threads:
             return
         self.processed_threads.add(thread.id)
+
+        self.thread_activity[thread.id] = datetime.utcnow()
 
         if thread.parent_id in SELFHELP_CHANNEL_IDS:
             await thread.send("Analyzing your question, please wait...")
@@ -277,13 +281,8 @@ class SelfHelp(commands.Cog):
         ):
             await self.process_forum_thread(message.channel, initial_message=message)
 
-        if message.author.bot:
-            return
-        if (
-            message.channel.id in SELFHELP_CHANNEL_IDS
-            or message.channel.id in SOLVED_ONLY_CHANNEL_IDS
-        ):
-            return
+        if not message.author.bot and isinstance(message.channel, discord.Thread):
+            self.thread_activity[message.channel.id] = datetime.utcnow()
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -320,6 +319,30 @@ class SelfHelp(commands.Cog):
                 parent_channel_id=channel.id,
             ),
         )
+
+    @tasks.loop(minutes=30)
+    async def check_stale_threads(self):
+        now = datetime.utcnow()
+        for thread_id, last_active in list(self.thread_activity.items()):
+            thread = self.bot.get_channel(thread_id)
+            if not isinstance(thread, discord.Thread):
+                continue
+            if thread.locked or thread.parent_id not in SELFHELP_CHANNEL_IDS:
+                continue
+            inactive_days = (now - last_active).days
+            try:
+                if inactive_days == 3:
+                    await thread.send(
+                        f"🕒 <@{thread.owner_id}>, this thread hasn’t had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
+                    )
+                elif inactive_days >= 6:
+                    await thread.send(
+                        "🔒 No response after reminder. This thread will now be closed."
+                    )
+                    await thread.edit(archived=True, locked=True)
+                    self.thread_activity.pop(thread_id, None)
+            except Exception as e:
+                logger.warning(f"Failed to process stale thread {thread_id}: {e}")
 
 
 async def setup(bot):
