@@ -153,10 +153,8 @@ class SelfHelp(commands.Cog):
                                 ),
                                 "owner_id": data["owner_id"],
                             }
-                        except Exception as e:
-                            logger.warning(
-                                f"Skipping thread {tid} due to invalid data: {data}"
-                            )
+                        except Exception:
+                            continue
                     return fixed
             except Exception as e:
                 logger.warning(f"Failed to load activity data: {e}")
@@ -207,21 +205,34 @@ class SelfHelp(commands.Cog):
     async def bootstrap_existing_threads(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
-            for channel_id in SELFHELP_CHANNEL_IDS:
+            for channel_id in SELFHELP_CHANNEL_IDS + SOLVED_ONLY_CHANNEL_IDS:
                 channel = guild.get_channel(channel_id)
                 if not isinstance(channel, discord.ForumChannel):
                     continue
                 for thread in guild.threads:
-                    if thread.parent_id == channel.id and not thread.locked:
-                        owner_id = await self.get_thread_owner_id(thread)
-                        self.thread_activity[thread.id] = {
-                            "last_active": (
-                                thread.last_message.created_at
-                                if thread.last_message
-                                else thread.created_at
-                            ),
-                            "owner_id": owner_id,
-                        }
+                    if thread.parent_id != channel.id or thread.locked:
+                        continue
+                    owner_id = await self.get_thread_owner_id(thread)
+                    self.thread_activity[thread.id] = {
+                        "last_active": (
+                            thread.last_message.created_at
+                            if thread.last_message
+                            else thread.created_at
+                        ),
+                        "owner_id": owner_id,
+                    }
+                    try:
+                        await thread.send(
+                            view=SupportView(
+                                thread_owner=owner_id,
+                                parent_channel_id=thread.parent_id,
+                                show_help_button=(
+                                    thread.parent_id in SELFHELP_CHANNEL_IDS
+                                ),
+                            )
+                        )
+                    except Exception:
+                        pass
         self.save_activity_data()
 
     @commands.Cog.listener()
@@ -250,8 +261,8 @@ class SelfHelp(commands.Cog):
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
     ):
+        owner_id = await self.get_thread_owner_id(thread)
         if thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
-            owner_id = await self.get_thread_owner_id(thread)
             await thread.send(
                 "Use the button below to mark your question as solved.",
                 view=SupportView(
@@ -284,7 +295,6 @@ class SelfHelp(commands.Cog):
             answer = await self.query_api(
                 thread.name or body, f"{body}\nTags: {', '.join(tags)}"
             )
-            owner_id = await self.get_thread_owner_id(thread)
             await thread.send(
                 answer,
                 view=SupportView(
