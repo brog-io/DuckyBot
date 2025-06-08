@@ -186,7 +186,6 @@ class SelfHelp(commands.Cog):
         except Exception as e:
             logger.warning(f"Failed to save activity data: {e}")
 
-
     async def bootstrap_existing_threads(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
@@ -198,17 +197,22 @@ class SelfHelp(commands.Cog):
                     for thread in guild.threads:
                         if (
                             thread.parent_id == channel.id
-                            and not thread.archived
+                            and not thread.locked
                             and thread.id not in self.thread_activity
                         ):
                             self.thread_activity[thread.id] = {
-                                "last_active": thread.last_message.created_at if thread.last_message else thread.created_at,
+                                "last_active": (
+                                    thread.last_message.created_at
+                                    if thread.last_message
+                                    else thread.created_at
+                                ),
                                 "warned_at": None,
                             }
                     self.save_activity_data()
                 except Exception as e:
-                    logger.warning(f"Failed to bootstrap threads in {channel.name}: {e}")
-
+                    logger.warning(
+                        f"Failed to bootstrap threads in {channel.name}: {e}"
+                    )
 
     @tasks.loop(hours=6)
     async def check_stale_threads(self):
@@ -217,7 +221,7 @@ class SelfHelp(commands.Cog):
             thread = self.bot.get_channel(thread_id)
             if not isinstance(thread, discord.Thread):
                 continue
-            if thread.locked or thread.archived:
+            if thread.locked:
                 continue
             if thread.parent_id not in SELFHELP_CHANNEL_IDS:
                 continue
