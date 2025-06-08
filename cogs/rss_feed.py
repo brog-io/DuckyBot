@@ -127,7 +127,6 @@ async def fetch_og_image(url):
     return None
 
 
-# HTML to Discord Markdown
 def html_to_discord_md(html: str) -> str:
     if not html:
         return ""
@@ -139,10 +138,10 @@ def html_to_discord_md(html: str) -> str:
     html = re.sub(r"<(p|div)[^>]*>", "", html, flags=re.IGNORECASE)
     # Lists: <li>...</li> becomes bullet points
     html = re.sub(r"<li>(.*?)</li>", r"• \1\n", html, flags=re.IGNORECASE)
-    # Links: <a href="url">text</a> to [text](url)
+    # Strip <a href="...">...</a>, keep only the visible text (removes links)
     html = re.sub(
         r'<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-        lambda m: f"[{strip_tags(m.group(2)).strip()}]({m.group(1)})",
+        lambda m: strip_tags(m.group(2)).strip(),
         html,
         flags=re.IGNORECASE,
     )
@@ -262,7 +261,6 @@ class RSSFeedCog(commands.Cog):
         link = entry.link
         published = entry.get("published", None)
 
-        # format HTML to Discord markdown
         clean_text = html_to_discord_md(summary)
 
         image_url = await extract_image_url(entry)
