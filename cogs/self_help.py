@@ -353,17 +353,6 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if (
-            isinstance(message.channel, discord.Thread)
-            and (
-                message.channel.parent_id in SELFHELP_CHANNEL_IDS
-                or message.channel.parent_id in SOLVED_ONLY_CHANNEL_IDS
-            )
-            and message.channel.owner_id == message.author.id
-            and message.id == message.channel.id
-        ):
-            await self.process_forum_thread(message.channel, initial_message=message)
-
         if message.author.bot:
             return
         if (
