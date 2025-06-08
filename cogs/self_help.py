@@ -178,6 +178,11 @@ class SelfHelp(commands.Cog):
             logger.warning(f"Failed to save activity data: {e}")
 
     async def get_thread_owner_id(self, thread: discord.Thread) -> int | None:
+        # First, check persisted data
+        if thread.id in self.thread_activity and self.thread_activity[thread.id].get(
+            "owner_id"
+        ):
+            return self.thread_activity[thread.id]["owner_id"]
         if thread.owner_id:
             return thread.owner_id
         try:
@@ -202,6 +207,17 @@ class SelfHelp(commands.Cog):
                     else "Sorry, I couldn't find an answer."
                 )
 
+    async def already_sent_view(self, thread: discord.Thread) -> bool:
+        # Returns True if a message with a SupportView already exists in the thread (last 10 messages)
+        try:
+            async for msg in thread.history(limit=10, oldest_first=False):
+                if msg.author.id == self.bot.user.id and msg.components:
+                    # The bot has sent a message with a component (buttons)
+                    return True
+        except Exception:
+            pass
+        return False
+
     async def bootstrap_existing_threads(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
@@ -209,30 +225,34 @@ class SelfHelp(commands.Cog):
                 channel = guild.get_channel(channel_id)
                 if not isinstance(channel, discord.ForumChannel):
                     continue
-                for thread in guild.threads:
-                    if thread.parent_id != channel.id or thread.locked:
+                for thread in channel.threads:
+                    if thread.locked or thread.parent_id != channel.id:
                         continue
                     owner_id = await self.get_thread_owner_id(thread)
-                    self.thread_activity[thread.id] = {
-                        "last_active": (
-                            thread.last_message.created_at
-                            if thread.last_message
-                            else thread.created_at
-                        ),
-                        "owner_id": owner_id,
-                    }
-                    try:
-                        await thread.send(
-                            view=SupportView(
-                                thread_owner=owner_id,
-                                parent_channel_id=thread.parent_id,
-                                show_help_button=(
-                                    thread.parent_id in SELFHELP_CHANNEL_IDS
-                                ),
+                    # Do NOT overwrite owner_id if it's already saved
+                    if thread.id not in self.thread_activity:
+                        self.thread_activity[thread.id] = {
+                            "last_active": (
+                                thread.last_message.created_at
+                                if thread.last_message
+                                else thread.created_at
+                            ),
+                            "owner_id": owner_id,
+                        }
+                    # Only send the view if not already present
+                    if not await self.already_sent_view(thread):
+                        try:
+                            await thread.send(
+                                view=SupportView(
+                                    thread_owner=owner_id,
+                                    parent_channel_id=thread.parent_id,
+                                    show_help_button=(
+                                        thread.parent_id in SELFHELP_CHANNEL_IDS
+                                    ),
+                                )
                             )
-                        )
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
         self.save_activity_data()
 
     @commands.Cog.listener()
@@ -243,9 +263,11 @@ class SelfHelp(commands.Cog):
             return
         if message.channel.parent_id not in SELFHELP_CHANNEL_IDS:
             return
+        # Update last active and persist owner
+        owner_id = await self.get_thread_owner_id(message.channel)
         self.thread_activity[message.channel.id] = {
             "last_active": datetime.utcnow(),
-            "owner_id": await self.get_thread_owner_id(message.channel),
+            "owner_id": owner_id,
         }
         self.save_activity_data()
 
@@ -262,6 +284,16 @@ class SelfHelp(commands.Cog):
         self, thread: discord.Thread, initial_message: discord.Message = None
     ):
         owner_id = await self.get_thread_owner_id(thread)
+        # Save owner_id if not saved
+        if thread.id not in self.thread_activity:
+            self.thread_activity[thread.id] = {
+                "last_active": datetime.utcnow(),
+                "owner_id": owner_id,
+            }
+            self.save_activity_data()
+        # Prevent resending buttons
+        if await self.already_sent_view(thread):
+            return
         if thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
             await thread.send(
                 "Use the button below to mark your question as solved.",
