@@ -195,20 +195,20 @@ class SelfHelp(commands.Cog):
                 if not isinstance(channel, discord.ForumChannel):
                     continue
                 try:
-                    threads = await channel.active_threads()
-                    for thread in threads:
-                        if thread.id not in self.thread_activity and not thread.archived:
+                    for thread in guild.threads:
+                        if (
+                            thread.parent_id == channel.id
+                            and not thread.archived
+                            and thread.id not in self.thread_activity
+                        ):
                             self.thread_activity[thread.id] = {
-                                "last_active": (
-                                    thread.last_message.created_at
-                                    if thread.last_message
-                                    else thread.created_at
-                                ),
+                                "last_active": thread.last_message.created_at if thread.last_message else thread.created_at,
                                 "warned_at": None,
                             }
                     self.save_activity_data()
                 except Exception as e:
-                    logger.warning(f"Failed to bootstrap threads in {channel.name}: {e}")
+                    logger.warning(f\"Failed to bootstrap threads in {channel.name}: {e}\")
+
 
     @tasks.loop(hours=6)
     async def check_stale_threads(self):
