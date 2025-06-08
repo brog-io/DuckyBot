@@ -295,7 +295,8 @@ class SelfHelp(commands.Cog):
             try:
                 if inactive_time == 3:
                     await thread.send(
-                        "🕒 This thread hasn’t had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
+                        f"🕒 <@{thread.owner_id}>, this thread hasn’t had activity in a few days. "
+                        "If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
                     )
                 elif inactive_time >= 6:
                     await thread.send(
