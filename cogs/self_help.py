@@ -124,7 +124,8 @@ class SupportView(ui.View):
                 return
 
             await interaction.response.send_message(
-                "Thread marked as solved and closed.", ephemeral=False
+                f"Thread marked as solved and closed by {interaction.user.mention}.",
+                ephemeral=False,
             )
 
             try:
