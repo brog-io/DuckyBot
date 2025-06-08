@@ -142,10 +142,16 @@ class SelfHelp(commands.Cog):
         if os.path.exists(ACTIVITY_FILE):
             try:
                 with open(ACTIVITY_FILE, "r") as f:
-                    return {
-                        int(tid): datetime.fromisoformat(ts)
-                        for tid, ts in json.load(f).items()
-                    }
+                    raw = json.load(f)
+                    fixed = {}
+                    for tid, ts in raw.items():
+                        try:
+                            fixed[int(tid)] = datetime.fromisoformat(ts)
+                        except Exception as e:
+                            logger.warning(
+                                f"Skipping thread {tid} due to invalid timestamp: {ts}"
+                            )
+                    return fixed
             except Exception as e:
                 logger.warning(f"Failed to load activity data: {e}")
         return {}
