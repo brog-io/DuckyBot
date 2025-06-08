@@ -34,6 +34,10 @@ ACTIVITY_FILE = "thread_activity.json"
 
 
 class SupportView(ui.View):
+    """
+    View for support forum threads, includes buttons for marking solved and requesting more help.
+    """
+
     def __init__(
         self, thread_owner: int, parent_channel_id: int, show_help_button: bool = True
     ):
@@ -45,6 +49,8 @@ class SupportView(ui.View):
         self.add_item(self.SolvedButton())
 
     def is_authorized(self, user: discord.Member) -> bool:
+        if user.id == self.thread_owner:
+            return True
         if isinstance(user, discord.Member) and user.guild_permissions.manage_threads:
             return True
         if isinstance(user, discord.Member):
@@ -66,7 +72,8 @@ class SupportView(ui.View):
             view: SupportView = self.view
             if not view.is_authorized(interaction.user):
                 await interaction.response.send_message(
-                    "Only moderators can use this button.", ephemeral=True
+                    "Only the thread creator or moderators can use this button.",
+                    ephemeral=True,
                 )
                 return
             await interaction.response.send_message(
@@ -75,13 +82,6 @@ class SupportView(ui.View):
             )
             self.disabled = True
             await interaction.message.edit(view=view)
-            cog = interaction.client.get_cog("SelfHelp")
-            if cog and isinstance(interaction.channel, discord.Thread):
-                thread_id = interaction.channel.id
-                if thread_id in cog.thread_activity:
-                    cog.thread_activity[thread_id]["last_active"] = datetime.utcnow()
-                    cog.thread_activity[thread_id]["warned_at"] = None
-                    cog.save_activity_data()
 
     class SolvedButton(ui.Button):
         def __init__(self):
@@ -96,7 +96,8 @@ class SupportView(ui.View):
             view: SupportView = self.view
             if not view.is_authorized(interaction.user):
                 await interaction.response.send_message(
-                    "Only moderators can mark this as solved.", ephemeral=True
+                    "Only the thread creator or moderators can mark this as solved.",
+                    ephemeral=True,
                 )
                 return
             thread = interaction.channel
@@ -128,19 +129,18 @@ class SupportView(ui.View):
                     )
                 else:
                     await thread.edit(archived=True, locked=True)
-                cog = interaction.client.get_cog("SelfHelp")
-                if cog and isinstance(thread, discord.Thread):
-                    cog.thread_activity.pop(thread.id, None)
-                    cog.save_activity_data()
             except Exception as e:
                 await thread.send(f"Error while closing thread: {e}")
 
 
 class SelfHelp(commands.Cog):
+    """
+    Self-help forum automation cog for Discord support and solved-only channels.
+    """
+
     def __init__(self, bot):
         self.bot = bot
         bot.add_view(SupportView(thread_owner=0, parent_channel_id=0))
-        self.processed_threads = set()
         self.thread_activity = self.load_activity_data()
         self.check_stale_threads.start()
         bot.loop.create_task(self.bootstrap_existing_threads())
@@ -187,6 +187,10 @@ class SelfHelp(commands.Cog):
             logger.warning(f"Failed to save activity data: {e}")
 
     async def bootstrap_existing_threads(self):
+        """
+        Loads threads from self-help channels into activity tracking on bot startup.
+        Only tracks activity for self-help channels, not solved-only.
+        """
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
             for channel_id in SELFHELP_CHANNEL_IDS:
@@ -216,6 +220,10 @@ class SelfHelp(commands.Cog):
 
     @tasks.loop(hours=6)
     async def check_stale_threads(self):
+        """
+        Bump or close inactive threads in self-help channels.
+        Solved-only channels are not bumped or auto-closed.
+        """
         now = datetime.utcnow()
         for thread_id, data in list(self.thread_activity.items()):
             thread = self.bot.get_channel(thread_id)
@@ -249,6 +257,160 @@ class SelfHelp(commands.Cog):
                     logger.warning(f"Failed to close thread {thread_id}: {e}")
 
         self.save_activity_data()
+
+    async def query_api(self, query: str, extra: str = "") -> str:
+        """
+        Calls the Poggers docs search API for AI answers.
+        """
+        payload = {
+            "query": f"{query}\n{extra}".strip(),
+            "key": API_KEY,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.poggers.win/api/ente/docs-search", json=payload
+            ) as resp:
+                if resp.status != 200:
+                    return f"API error: {resp.status}"
+                data = await resp.json()
+                return (
+                    data.get("answer", "No answer returned.")
+                    if data.get("success")
+                    else "Sorry, I couldn't find an answer."
+                )
+
+    async def process_forum_thread(
+        self, thread: discord.Thread, initial_message: discord.Message = None
+    ):
+        """
+        Handles thread startup messages and views for both self-help and solved-only channels.
+        """
+        # Solved-only: only show solved button, no bumps, no AI
+        if thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
+            await thread.send(
+                "Use the button below to mark your question as solved.",
+                view=SupportView(
+                    thread_owner=thread.owner_id,
+                    parent_channel_id=thread.parent_id,
+                    show_help_button=False,
+                ),
+            )
+            return
+
+        # Self-help: normal AI/help workflow
+        if thread.parent_id in SELFHELP_CHANNEL_IDS:
+            await thread.send("Analyzing your question, please wait...")
+
+            body = ""
+            if initial_message:
+                body = initial_message.content
+            else:
+                try:
+                    async for msg in thread.history(limit=1, oldest_first=True):
+                        body = msg.content
+                        break
+                except Exception as e:
+                    logger.error(f"Failed to fetch first message: {e}")
+
+            tag_names = []
+            if isinstance(thread.parent, discord.ForumChannel):
+                all_tags = {tag.id: tag.name for tag in thread.parent.available_tags}
+                tag_names = [
+                    all_tags.get(t.id if hasattr(t, "id") else t, "")
+                    for t in thread.applied_tags or []
+                ]
+
+            query = thread.name or body
+            context = (
+                f"{body}\nTags: {', '.join(filter(None, tag_names))}"
+                if body or tag_names
+                else ""
+            )
+
+            answer = await self.query_api(query, context)
+            await thread.send(
+                answer,
+                view=SupportView(
+                    thread_owner=thread.owner_id,
+                    parent_channel_id=thread.parent_id,
+                    show_help_button=True,
+                ),
+            )
+
+            async for msg in thread.history(limit=5):
+                if msg.content.startswith("Analyzing your question"):
+                    await msg.delete()
+                    break
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        if (
+            thread.parent_id in SELFHELP_CHANNEL_IDS
+            or thread.parent_id in SOLVED_ONLY_CHANNEL_IDS
+        ):
+            await asyncio.sleep(1)
+            await self.process_forum_thread(thread)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if (
+            isinstance(message.channel, discord.Thread)
+            and (
+                message.channel.parent_id in SELFHELP_CHANNEL_IDS
+                or message.channel.parent_id in SOLVED_ONLY_CHANNEL_IDS
+            )
+            and message.channel.owner_id == message.author.id
+            and message.id == message.channel.id
+        ):
+            await self.process_forum_thread(message.channel, initial_message=message)
+
+        if message.author.bot:
+            return
+        if (
+            message.channel.id in SELFHELP_CHANNEL_IDS
+            or message.channel.id in SOLVED_ONLY_CHANNEL_IDS
+        ):
+            return
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if str(payload.emoji) != REACTION_TRIGGER:
+            return
+
+        channel = self.bot.get_channel(payload.channel_id)
+        if not channel:
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except Exception:
+            return
+
+        if message.author.bot:
+            return
+
+        thread = await message.create_thread(name=message.content[:90])
+
+        user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
+            payload.user_id
+        )
+
+        await thread.send(
+            f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
+        )
+
+        if thread.parent_id in SELFHELP_CHANNEL_IDS:
+            answer = await self.query_api(message.content)
+            await thread.send(answer, view=SupportView(thread_owner=payload.user_id))
+        else:
+            await thread.send(
+                "Use the button below to mark your question as solved.",
+                view=SupportView(
+                    thread_owner=payload.user_id,
+                    parent_channel_id=thread.parent_id,
+                    show_help_button=False,
+                ),
+            )
 
 
 async def setup(bot):
