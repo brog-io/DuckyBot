@@ -167,3 +167,5 @@ cython_debug/
 ente_counts.json
 leaderboard_cache.json
 ente_rss_state.json
+photo_star_counts.json
+thread_activity.json
