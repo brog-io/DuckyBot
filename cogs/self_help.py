@@ -207,7 +207,7 @@ class SelfHelp(commands.Cog):
                             }
                     self.save_activity_data()
                 except Exception as e:
-                    logger.warning(f\"Failed to bootstrap threads in {channel.name}: {e}\")
+                    logger.warning(f"Failed to bootstrap threads in {channel.name}: {e}")
 
 
     @tasks.loop(hours=6)
