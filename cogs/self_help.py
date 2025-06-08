@@ -34,7 +34,9 @@ ACTIVITY_FILE = "thread_activity.json"
 
 
 class SupportView(ui.View):
-    def __init__(self, thread_owner: int, parent_channel_id: int, show_help_button: bool = True):
+    def __init__(
+        self, thread_owner: int, parent_channel_id: int, show_help_button: bool = True
+    ):
         super().__init__(timeout=None)
         self.thread_owner = thread_owner
         self.parent_channel_id = parent_channel_id
@@ -54,40 +56,75 @@ class SupportView(ui.View):
 
     class HelpButton(ui.Button):
         def __init__(self):
-            super().__init__(label="This didn't help", style=discord.ButtonStyle.danger, custom_id="support_button", row=0)
+            super().__init__(
+                label="This didn't help",
+                style=discord.ButtonStyle.danger,
+                custom_id="support_button",
+                row=0,
+            )
 
         async def callback(self, interaction: discord.Interaction):
             view: SupportView = self.view
             if not view.is_authorized(interaction.user):
-                await interaction.response.send_message("Only the thread creator or moderators can use this button.", ephemeral=True)
+                await interaction.response.send_message(
+                    "Only the thread creator or moderators can use this button.",
+                    ephemeral=True,
+                )
                 return
-            await interaction.response.send_message(f"<@&{SUPPORT_ROLE_ID}> User still needs help in {interaction.channel.mention}", ephemeral=False)
+            await interaction.response.send_message(
+                f"<@&{SUPPORT_ROLE_ID}> User still needs help in {interaction.channel.mention}",
+                ephemeral=False,
+            )
             self.disabled = True
             await interaction.message.edit(view=view)
 
     class SolvedButton(ui.Button):
         def __init__(self):
-            super().__init__(label="Mark as Solved", style=discord.ButtonStyle.success, custom_id="mark_solved_button", row=0)
+            super().__init__(
+                label="Mark as Solved",
+                style=discord.ButtonStyle.success,
+                custom_id="mark_solved_button",
+                row=0,
+            )
 
         async def callback(self, interaction: discord.Interaction):
             view: SupportView = self.view
             if not view.is_authorized(interaction.user):
-                await interaction.response.send_message("Only the thread creator or moderators can mark this as solved.", ephemeral=True)
+                await interaction.response.send_message(
+                    "Only the thread creator or moderators can mark this as solved.",
+                    ephemeral=True,
+                )
                 return
             thread = interaction.channel
             if not isinstance(thread, discord.Thread):
-                await interaction.response.send_message("This button must be used in a thread.", ephemeral=True)
+                await interaction.response.send_message(
+                    "This button must be used in a thread.", ephemeral=True
+                )
                 return
-            await interaction.response.send_message(f"Thread marked as solved and closed by {interaction.user.mention}.",", ephemeral=False)
+            await interaction.response.send_message(
+                f"Thread marked as solved and closed by {interaction.user.mention}.",
+                ephemeral=False,
+            )
             try:
                 if isinstance(thread.parent, discord.ForumChannel):
-                    current_tags = list(thread.applied_tags) if thread.applied_tags else []
+                    current_tags = (
+                        list(thread.applied_tags) if thread.applied_tags else []
+                    )
                     forum_channel = thread.parent
                     solved_tag_id = SOLVED_TAG_IDS.get(forum_channel.id)
-                    solved_tag = next((tag for tag in forum_channel.available_tags if tag.id == solved_tag_id), None)
+                    solved_tag = next(
+                        (
+                            tag
+                            for tag in forum_channel.available_tags
+                            if tag.id == solved_tag_id
+                        ),
+                        None,
+                    )
                     if solved_tag and solved_tag not in current_tags:
                         current_tags.append(solved_tag)
-                    await thread.edit(archived=True, locked=True, applied_tags=current_tags)
+                    await thread.edit(
+                        archived=True, locked=True, applied_tags=current_tags
+                    )
                 else:
                     await thread.edit(archived=True, locked=True)
             except Exception as e:
@@ -111,11 +148,15 @@ class SelfHelp(commands.Cog):
                     for tid, data in raw.items():
                         try:
                             fixed[int(tid)] = {
-                                "last_active": datetime.fromisoformat(data["last_active"]),
-                                "owner_id": data["owner_id"]
+                                "last_active": datetime.fromisoformat(
+                                    data["last_active"]
+                                ),
+                                "owner_id": data["owner_id"],
                             }
                         except Exception as e:
-                            logger.warning(f"Skipping thread {tid} due to invalid data: {data}")
+                            logger.warning(
+                                f"Skipping thread {tid} due to invalid data: {data}"
+                            )
                     return fixed
             except Exception as e:
                 logger.warning(f"Failed to load activity data: {e}")
@@ -128,12 +169,12 @@ class SelfHelp(commands.Cog):
                     {
                         str(tid): {
                             "last_active": ts["last_active"].isoformat(),
-                            "owner_id": ts["owner_id"]
+                            "owner_id": ts["owner_id"],
                         }
                         for tid, ts in self.thread_activity.items()
                     },
                     f,
-                    indent=2
+                    indent=2,
                 )
         except Exception as e:
             logger.warning(f"Failed to save activity data: {e}")
@@ -151,11 +192,17 @@ class SelfHelp(commands.Cog):
     async def query_api(self, query: str, extra: str = "") -> str:
         payload = {"query": f"{query}\n{extra}".strip(), "key": API_KEY}
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.poggers.win/api/ente/docs-search", json=payload) as resp:
+            async with session.post(
+                "https://api.poggers.win/api/ente/docs-search", json=payload
+            ) as resp:
                 if resp.status != 200:
                     return f"API error: {resp.status}"
                 data = await resp.json()
-                return data.get("answer", "No answer returned.") if data.get("success") else "Sorry, I couldn't find an answer."
+                return (
+                    data.get("answer", "No answer returned.")
+                    if data.get("success")
+                    else "Sorry, I couldn't find an answer."
+                )
 
     async def bootstrap_existing_threads(self):
         await self.bot.wait_until_ready()
@@ -168,8 +215,12 @@ class SelfHelp(commands.Cog):
                     if thread.parent_id == channel.id and not thread.locked:
                         owner_id = await self.get_thread_owner_id(thread)
                         self.thread_activity[thread.id] = {
-                            "last_active": thread.last_message.created_at if thread.last_message else thread.created_at,
-                            "owner_id": owner_id
+                            "last_active": (
+                                thread.last_message.created_at
+                                if thread.last_message
+                                else thread.created_at
+                            ),
+                            "owner_id": owner_id,
                         }
         self.save_activity_data()
 
@@ -183,20 +234,32 @@ class SelfHelp(commands.Cog):
             return
         self.thread_activity[message.channel.id] = {
             "last_active": datetime.utcnow(),
-            "owner_id": await self.get_thread_owner_id(message.channel)
+            "owner_id": await self.get_thread_owner_id(message.channel),
         }
         self.save_activity_data()
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
-        if thread.parent_id in SELFHELP_CHANNEL_IDS or thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
+        if (
+            thread.parent_id in SELFHELP_CHANNEL_IDS
+            or thread.parent_id in SOLVED_ONLY_CHANNEL_IDS
+        ):
             await asyncio.sleep(1)
             await self.process_forum_thread(thread)
 
-    async def process_forum_thread(self, thread: discord.Thread, initial_message: discord.Message = None):
+    async def process_forum_thread(
+        self, thread: discord.Thread, initial_message: discord.Message = None
+    ):
         if thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
             owner_id = await self.get_thread_owner_id(thread)
-            await thread.send("Use the button below to mark your question as solved.", view=SupportView(thread_owner=owner_id, parent_channel_id=thread.parent_id, show_help_button=False))
+            await thread.send(
+                "Use the button below to mark your question as solved.",
+                view=SupportView(
+                    thread_owner=owner_id,
+                    parent_channel_id=thread.parent_id,
+                    show_help_button=False,
+                ),
+            )
             return
         if thread.parent_id in SELFHELP_CHANNEL_IDS:
             await thread.send("Analyzing your question, please wait...")
@@ -209,10 +272,25 @@ class SelfHelp(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to fetch first message: {e}")
                 body = ""
-            tags = [t.name for t in getattr(thread.parent, "available_tags", []) if hasattr(t, "name")] if isinstance(thread.parent, discord.ForumChannel) else []
-            answer = await self.query_api(thread.name or body, f"{body}\nTags: {', '.join(tags)}")
+            tags = (
+                [
+                    t.name
+                    for t in getattr(thread.parent, "available_tags", [])
+                    if hasattr(t, "name")
+                ]
+                if isinstance(thread.parent, discord.ForumChannel)
+                else []
+            )
+            answer = await self.query_api(
+                thread.name or body, f"{body}\nTags: {', '.join(tags)}"
+            )
             owner_id = await self.get_thread_owner_id(thread)
-            await thread.send(answer, view=SupportView(thread_owner=owner_id, parent_channel_id=thread.parent_id))
+            await thread.send(
+                answer,
+                view=SupportView(
+                    thread_owner=owner_id, parent_channel_id=thread.parent_id
+                ),
+            )
             async for msg in thread.history(limit=5):
                 if msg.content.startswith("Analyzing your question"):
                     await msg.delete()
@@ -232,8 +310,12 @@ class SelfHelp(commands.Cog):
         if message.author.bot:
             return
         thread = await message.create_thread(name=message.content[:90])
-        user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
-        await thread.send(f"<@{user.id}> created this thread from a message by <@{message.author.id}>")
+        user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
+            payload.user_id
+        )
+        await thread.send(
+            f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
+        )
         await self.process_forum_thread(thread, initial_message=message)
 
     @tasks.loop(minutes=30)
@@ -250,9 +332,13 @@ class SelfHelp(commands.Cog):
             inactive_time = (now - last_active).days
             try:
                 if inactive_time == 3:
-                    await thread.send(f"🕒 <@{owner_id}>, this thread hasn’t had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open.")
+                    await thread.send(
+                        f"🕒 <@{owner_id}>, this thread hasn’t had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
+                    )
                 elif inactive_time >= 6:
-                    await thread.send("🔒 No response after reminder. This thread will now be closed.")
+                    await thread.send(
+                        "🔒 No response after reminder. This thread will now be closed."
+                    )
                     await thread.edit(archived=True, locked=True)
                     self.thread_activity.pop(thread_id, None)
             except Exception as e:
