@@ -127,7 +127,6 @@ class ServerManager(commands.Cog):
                     "- <@&950275266045960254>: Keeping things smooth and respectful.\n"
                     "- <@&1307599568824700969>: Driving innovation with ideas and feedback. Use `/role contributor` to claim\n"
                     "- <@&1376169325064355940>: Starred the GitHub repo. Use `/role stargazer` to claim\n"
-                    "- <@&1312804146428252235>: Deep knowledge of Ente’s products.\n"
                     "# Service Roles\n"
                     "- <@&1312807194487685231>: Focused on all things Ente Photos.\n"
                     "- <@&1099362028147183759>: Focused on all things Ente Auth.\n"
