@@ -162,7 +162,7 @@ class ServerManager(commands.Cog):
                     "  - **<#1121126215995113552>**: Share suggestions, report bugs, or provide input on Ente products and community.\n"
                     "  - **<#1364139133794123807>**: Ask for help, Ducky will try to help you out!.\n\n"
                     "- 💬 **COMMUNITY**\n"
-                    "  - **<#1380262760994177135>**: A place to see who joined the community.\n\n"
+                    "  - **<#1380262760994177135>**: A place to see who joined the community.\n"
                     "  - **<#953968250553765908>**: Casual conversations unrelated to Ente products.\n"
                     "  - **<#1025978742318833684>**: A place for sharing your favorite memories.\n"
                     "  - **<#1335538661185421386>**: Our wall of love, a place where all our nice reviews get shown\n"
