@@ -167,7 +167,9 @@ class Starboard(commands.Cog):
 
     def create_embed(self, message):
         embed = discord.Embed(
-            description=message.content or "*[No content]*", color=0xFFCD3F
+            description=message.content or "*[No content]*",
+            color=0xFFCD3F,
+            timestamp=message.created_at,
         )
         author_name = message.author.display_name
         author_icon_url = message.author.avatar.url if message.author.avatar else None
@@ -176,9 +178,6 @@ class Starboard(commands.Cog):
         if message.attachments:
             embed.set_image(url=message.attachments[0].url)
 
-        embed.set_footer(
-            text=f"Posted: {message.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
         return embed
 
     def create_view(self, message, star_count):
