@@ -189,9 +189,10 @@ class SelfHelp(commands.Cog):
                     channel = guild.get_channel(channel_id)
                     if not isinstance(channel, discord.ForumChannel):
                         continue
-                    async for thread in channel.active_threads():
-                        if thread.archived:
-                            continue
+                        threads = await channel.threads()
+                        for thread in threads:
+                            if thread.archived:
+                                continue
                         async for message in thread.history(limit=1):
                             last_msg_time = message.created_at
                             break
