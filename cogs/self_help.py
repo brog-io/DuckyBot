@@ -4,6 +4,7 @@ import aiohttp
 import os
 import logging
 import asyncio
+import json
 from discord import ui
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -28,6 +29,72 @@ SOLVED_TAG_IDS = {
     1364139133794123807: 1364276749826920538,
     1121126215995113552: 1138421917406204016,
 }
+
+# Persistence configuration
+PERSISTENCE_FILE = "selfhelp_data.json"
+
+
+class PersistenceManager:
+    """Handles saving and loading bot data to/from JSON"""
+
+    @staticmethod
+    def save_data(processed_threads: set, thread_activity: dict):
+        """Save bot data to JSON file"""
+        try:
+            # Convert set to list and datetime objects to ISO strings
+            data = {
+                "processed_threads": list(processed_threads),
+                "thread_activity": {
+                    str(thread_id): timestamp.isoformat()
+                    for thread_id, timestamp in thread_activity.items()
+                },
+            }
+
+            # Write to temporary file first, then rename for atomic operation
+            temp_file = f"{PERSISTENCE_FILE}.tmp"
+            with open(temp_file, "w") as f:
+                json.dump(data, f, indent=2)
+
+            # Atomic rename
+            os.replace(temp_file, PERSISTENCE_FILE)
+            logger.info(f"Data saved to {PERSISTENCE_FILE}")
+
+        except Exception as e:
+            logger.error(f"Failed to save data: {e}")
+
+    @staticmethod
+    def load_data() -> tuple[set, dict]:
+        """Load bot data from JSON file"""
+        processed_threads = set()
+        thread_activity = {}
+
+        try:
+            if os.path.exists(PERSISTENCE_FILE):
+                with open(PERSISTENCE_FILE, "r") as f:
+                    data = json.load(f)
+
+                # Convert list back to set and ISO strings back to datetime objects
+                processed_threads = set(data.get("processed_threads", []))
+
+                raw_activity = data.get("thread_activity", {})
+                for thread_id, timestamp_str in raw_activity.items():
+                    try:
+                        timestamp = datetime.fromisoformat(timestamp_str)
+                        thread_activity[int(thread_id)] = timestamp
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid timestamp for thread {thread_id}: {e}")
+
+                logger.info(
+                    f"Loaded {len(processed_threads)} processed threads and {len(thread_activity)} thread activities"
+                )
+            else:
+                logger.info("No persistence file found, starting with empty data")
+
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}")
+            logger.info("Starting with empty data")
+
+        return processed_threads, thread_activity
 
 
 class SupportView(ui.View):
@@ -171,9 +238,12 @@ class SelfHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         bot.add_view(SupportView(thread_owner=0, parent_channel_id=0))
-        self.processed_threads = set()
-        self.thread_activity = {}
+
+        # Load persisted data
+        self.processed_threads, self.thread_activity = PersistenceManager.load_data()
+
         self.check_stale_threads.start()
+        self.save_data_periodically.start()
 
     def should_show_help_button(self, channel_id: int) -> bool:
         return channel_id not in SOLVED_ONLY_CHANNEL_IDS
@@ -211,6 +281,12 @@ class SelfHelp(commands.Cog):
         """Clean up data for archived/locked threads"""
         self.processed_threads.discard(thread_id)
         self.thread_activity.pop(thread_id, None)
+        # Save data after cleanup
+        self.save_data()
+
+    def save_data(self):
+        """Save current data to JSON file"""
+        PersistenceManager.save_data(self.processed_threads, self.thread_activity)
 
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
@@ -381,9 +457,24 @@ class SelfHelp(commands.Cog):
             except Exception as e:
                 logger.warning(f"Failed to process stale thread {thread_id}: {e}")
 
+    @tasks.loop(minutes=10)
+    async def save_data_periodically(self):
+        """Periodically save data to prevent data loss"""
+        self.save_data()
+
     @check_stale_threads.before_loop
     async def before_check_stale_threads(self):
         await self.bot.wait_until_ready()
+
+    @save_data_periodically.before_loop
+    async def before_save_data_periodically(self):
+        await self.bot.wait_until_ready()
+
+    def cog_unload(self):
+        """Save data when the cog is unloaded"""
+        self.save_data()
+        self.check_stale_threads.cancel()
+        self.save_data_periodically.cancel()
 
 
 async def setup(bot):
