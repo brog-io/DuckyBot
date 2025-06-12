@@ -6,7 +6,7 @@ import logging
 import asyncio
 from discord import ui
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,7 @@ class SupportView(ui.View):
         if user.id == self.thread_owner:
             return True
 
-        if thread and self.thread_owner == 0 and user.id == thread.owner_id:
-            return True
-
+        # Simplified logic - check if user is thread owner
         if thread and user.id == thread.owner_id:
             return True
 
@@ -149,11 +147,22 @@ class SupportView(ui.View):
                         locked=True,
                         applied_tags=current_tags,
                     )
+                    # Clean up data after archiving
+                    view.parent_channel_id  # Access parent through view
+                    if hasattr(self, "bot"):  # Check if we can access the cog
+                        cog = self.bot.get_cog("SelfHelp")
+                        if cog:
+                            cog.cleanup_thread_data(thread.id)
                 else:
                     await thread.edit(
                         archived=True,
                         locked=True,
                     )
+                    # Clean up data after archiving
+                    if hasattr(self, "bot"):  # Check if we can access the cog
+                        cog = self.bot.get_cog("SelfHelp")
+                        if cog:
+                            cog.cleanup_thread_data(thread.id)
             except Exception as e:
                 await thread.send(f"Error while closing thread: {e}")
 
@@ -181,18 +190,27 @@ class SelfHelp(commands.Cog):
 
         payload = {"query": prompt, "key": API_KEY}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.poggers.win/api/ente/docs-search", json=payload
-            ) as resp:
-                if resp.status != 200:
-                    return f"API error: {resp.status}"
-                data = await resp.json()
-                return (
-                    data.get("answer", "No answer returned.")
-                    if data.get("success")
-                    else "Sorry, I couldn't find an answer."
-                )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.poggers.win/api/ente/docs-search", json=payload
+                ) as resp:
+                    if resp.status != 200:
+                        return f"API error: {resp.status}"
+                    data = await resp.json()
+                    return (
+                        data.get("answer", "No answer returned.")
+                        if data.get("success")
+                        else "Sorry, I couldn't find an answer."
+                    )
+        except Exception as e:
+            logger.error(f"API request failed: {e}")
+            return "Sorry, I couldn't process your request due to a technical error."
+
+    def cleanup_thread_data(self, thread_id: int):
+        """Clean up data for archived/locked threads"""
+        self.processed_threads.discard(thread_id)
+        self.thread_activity.pop(thread_id, None)
 
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
@@ -201,7 +219,7 @@ class SelfHelp(commands.Cog):
             return
         self.processed_threads.add(thread.id)
 
-        self.thread_activity[thread.id] = datetime.utcnow()
+        self.thread_activity[thread.id] = datetime.now(timezone.utc)
 
         if thread.parent_id in SELFHELP_CHANNEL_IDS:
             await thread.send("Analyzing your question, please wait...")
@@ -211,6 +229,8 @@ class SelfHelp(commands.Cog):
                 body = initial_message.content
             else:
                 try:
+                    # Add a small delay to ensure the initial message is available
+                    await asyncio.sleep(0.5)
                     async for msg in thread.history(limit=1, oldest_first=True):
                         body = msg.content
                         break
@@ -219,17 +239,17 @@ class SelfHelp(commands.Cog):
 
             tag_names = []
             if isinstance(thread.parent, discord.ForumChannel):
-                all_tags = {tag.id: tag.name for tag in thread.parent.available_tags}
+                # More efficient tag lookup
+                tag_dict = {tag.id: tag.name for tag in thread.parent.available_tags}
                 tag_names = [
-                    all_tags.get(t.id if hasattr(t, "id") else t, "")
-                    for t in thread.applied_tags or []
+                    tag_dict[tag.id]
+                    for tag in (thread.applied_tags or [])
+                    if tag.id in tag_dict
                 ]
 
             query = thread.name or body
             context = (
-                f"{body}\nTags: {', '.join(filter(None, tag_names))}"
-                if body or tag_names
-                else ""
+                f"{body}\nTags: {', '.join(tag_names)}" if body or tag_names else ""
             )
 
             answer = await self.query_api(query, body, tag_names)
@@ -243,10 +263,14 @@ class SelfHelp(commands.Cog):
                 ),
             )
 
-            async for msg in thread.history(limit=5):
-                if msg.content.startswith("Analyzing your question"):
-                    await msg.delete()
-                    break
+            # Clean up the "Analyzing" message
+            try:
+                async for msg in thread.history(limit=5):
+                    if msg.content.startswith("Analyzing your question"):
+                        await msg.delete()
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to delete analyzing message: {e}")
 
         elif thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
             await thread.send(
@@ -270,6 +294,7 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Fixed: Removed the impossible condition (message.id == message.channel.id)
         if (
             isinstance(message.channel, discord.Thread)
             and (
@@ -277,12 +302,11 @@ class SelfHelp(commands.Cog):
                 or message.channel.parent_id in SOLVED_ONLY_CHANNEL_IDS
             )
             and message.channel.owner_id == message.author.id
-            and message.id == message.channel.id
         ):
             await self.process_forum_thread(message.channel, initial_message=message)
 
         if not message.author.bot and isinstance(message.channel, discord.Thread):
-            self.thread_activity[message.channel.id] = datetime.utcnow()
+            self.thread_activity[message.channel.id] = datetime.now(timezone.utc)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -301,7 +325,9 @@ class SelfHelp(commands.Cog):
         if message.author.bot:
             return
 
-        thread = await message.create_thread(name=message.content[:90])
+        # Fixed: Added fallback for empty message content
+        thread_name = message.content[:90] if message.content.strip() else "Help Thread"
+        thread = await message.create_thread(name=thread_name)
 
         user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(
             payload.user_id
@@ -311,7 +337,7 @@ class SelfHelp(commands.Cog):
             f"<@{user.id}> created this thread from a message by <@{message.author.id}>"
         )
 
-        answer = await self.query_api(message.content)
+        answer = await self.query_api(message.content or "Help request")
         await thread.send(
             answer,
             view=SupportView(
@@ -322,27 +348,42 @@ class SelfHelp(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def check_stale_threads(self):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+
         for thread_id, last_active in list(self.thread_activity.items()):
             thread = self.bot.get_channel(thread_id)
             if not isinstance(thread, discord.Thread):
+                # Remove invalid thread entries
+                self.cleanup_thread_data(thread_id)
                 continue
-            if thread.locked or thread.parent_id not in SELFHELP_CHANNEL_IDS:
+
+            # If thread is already archived/locked, clean up data
+            if thread.archived or thread.locked:
+                self.cleanup_thread_data(thread_id)
                 continue
+
+            if thread.parent_id not in SELFHELP_CHANNEL_IDS:
+                continue
+
             inactive_days = (now - last_active).days
             try:
                 if inactive_days == 3:
                     await thread.send(
-                        f"🕒 <@{thread.owner_id}>, this thread hasn’t had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I’ll keep it open."
+                        f"🕒 <@{thread.owner_id}>, this thread hasn't had activity in a few days. If your issue is solved, press **Mark as Solved**. If not, just reply and I'll keep it open."
                     )
                 elif inactive_days >= 6:
                     await thread.send(
                         "🔒 No response after reminder. This thread will now be closed."
                     )
                     await thread.edit(archived=True, locked=True)
-                    self.thread_activity.pop(thread_id, None)
+                    # Clean up data after archiving
+                    self.cleanup_thread_data(thread_id)
             except Exception as e:
                 logger.warning(f"Failed to process stale thread {thread_id}: {e}")
+
+    @check_stale_threads.before_loop
+    async def before_check_stale_threads(self):
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot):
