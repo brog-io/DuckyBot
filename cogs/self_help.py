@@ -5,7 +5,9 @@ import os
 import logging
 import asyncio
 from discord import ui
+from discord import app_commands
 from dotenv import load_dotenv
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +126,9 @@ class SupportView(ui.View):
                 )
                 return
 
+            close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
             await interaction.response.send_message(
-                f"Thread marked as solved and closed by {interaction.user.mention}.",
+                f"Thread marked as solved. It will be automatically closed <t:{close_time}:R>. Use `/unsolve` to cancel.",
                 ephemeral=False,
             )
 
@@ -134,36 +137,124 @@ class SupportView(ui.View):
                     current_tags = (
                         list(thread.applied_tags) if thread.applied_tags else []
                     )
-                    forum_channel = thread.parent
-                    solved_tag_id = SOLVED_TAG_IDS.get(forum_channel.id)
+                    solved_tag_id = SOLVED_TAG_IDS.get(thread.parent.id)
                     solved_tag = None
                     if solved_tag_id:
-                        for tag in forum_channel.available_tags:
+                        for tag in thread.parent.available_tags:
                             if tag.id == solved_tag_id:
                                 solved_tag = tag
                                 break
                     if solved_tag and solved_tag not in current_tags:
                         current_tags.append(solved_tag)
-                    await thread.edit(
-                        archived=True,
-                        locked=True,
-                        applied_tags=current_tags,
-                    )
-                else:
-                    await thread.edit(
-                        archived=True,
-                        locked=True,
-                    )
+                    await thread.edit(applied_tags=current_tags)
             except Exception as e:
-                await thread.send(f"Error while closing thread: {e}")
+                await thread.send(f"Error tagging thread: {e}")
+
+            cog: SelfHelp = view.bot.get_cog("SelfHelp")
+            task = asyncio.create_task(cog.delayed_close_thread(thread))
+            cog.pending_closures[thread.id] = task
 
 
 class SelfHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
         bot.add_view(SupportView(thread_owner=0, parent_channel_id=0))
         self.processed_threads = set()
+        self.pending_closures = {}
+        self.hint_sent_threads = set()
+
+    async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
+        try:
+            await asyncio.sleep(delay)
+            await thread.edit(locked=True, archived=True)
+            await thread.send("This thread is now closed.")
+            self.pending_closures.pop(thread.id, None)
+        except asyncio.CancelledError:
+            pass
+
+    @app_commands.command(
+        name="unsolve", description="Cancel auto-close and reopen thread"
+    )
+    async def unsolve(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.response.send_message(
+                "This command must be used in a thread.", ephemeral=True
+            )
+            return
+
+        if (
+            thread.owner_id != interaction.user.id
+            and not interaction.user.guild_permissions.manage_threads
+        ):
+            await interaction.response.send_message(
+                "You don't have permission to unsolve this thread.", ephemeral=True
+            )
+            return
+
+        if thread.id in self.pending_closures:
+            self.pending_closures[thread.id].cancel()
+            del self.pending_closures[thread.id]
+
+        await thread.edit(locked=False, archived=False)
+
+        if isinstance(thread.parent, discord.ForumChannel):
+            solved_tag_id = SOLVED_TAG_IDS.get(thread.parent.id)
+            if solved_tag_id:
+                new_tags = [
+                    tag for tag in thread.applied_tags if tag.id != solved_tag_id
+                ]
+                await thread.edit(applied_tags=new_tags)
+
+        await interaction.response.send_message(
+            "Thread has been reopened and unmarked as solved."
+        )
+
+    @app_commands.command(
+        name="solved", description="Manually mark a thread as solved."
+    )
+    async def solved(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.response.send_message(
+                "This command must be used in a thread.", ephemeral=True
+            )
+            return
+
+        if (
+            thread.owner_id != interaction.user.id
+            and not interaction.user.guild_permissions.manage_threads
+        ):
+            await interaction.response.send_message(
+                "You don't have permission to mark this thread as solved.",
+                ephemeral=True,
+            )
+            return
+
+        close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
+        await interaction.response.send_message(
+            f"Thread marked as solved. It will be closed in <t:{close_time}:R>.",
+            ephemeral=False,
+        )
+
+        try:
+            if isinstance(thread.parent, discord.ForumChannel):
+                current_tags = list(thread.applied_tags) if thread.applied_tags else []
+                solved_tag_id = SOLVED_TAG_IDS.get(thread.parent.id)
+                solved_tag = None
+                if solved_tag_id:
+                    for tag in thread.parent.available_tags:
+                        if tag.id == solved_tag_id:
+                            solved_tag = tag
+                            break
+                if solved_tag and solved_tag not in current_tags:
+                    current_tags.append(solved_tag)
+                await thread.edit(applied_tags=current_tags)
+        except Exception as e:
+            await thread.send(f"Error tagging thread: {e}")
+
+        task = asyncio.create_task(self.delayed_close_thread(thread))
+        self.pending_closures[thread.id] = task
 
     def should_show_help_button(self, channel_id: int) -> bool:
         return channel_id not in SOLVED_ONLY_CHANNEL_IDS
@@ -172,14 +263,8 @@ class SelfHelp(commands.Cog):
         self, title: str, body: str = "", tags: list[str] = None
     ) -> str:
         tags_text = ", ".join(tags) if tags else "None"
-        prompt = (
-            f"Title: {title}\n"
-            f"Tags: {tags_text}\n"
-            f"Message: {body.strip() or 'No content provided.'}"
-        )
-
+        prompt = f"Title: {title}\nTags: {tags_text}\nMessage: {body.strip() or 'No content provided.'}"
         payload = {"query": prompt, "key": API_KEY}
-
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.poggers.win/api/ente/docs-search", json=payload
@@ -203,10 +288,8 @@ class SelfHelp(commands.Cog):
         if thread.parent_id in SELFHELP_CHANNEL_IDS:
             await thread.send("Analyzing your question, please wait...")
 
-            body = ""
-            if initial_message:
-                body = initial_message.content
-            else:
+            body = initial_message.content if initial_message else ""
+            if not body:
                 try:
                     async for msg in thread.history(limit=1, oldest_first=True):
                         body = msg.content
@@ -223,14 +306,9 @@ class SelfHelp(commands.Cog):
                 ]
 
             query = thread.name or body
-            context = (
-                f"{body}\nTags: {', '.join(filter(None, tag_names))}"
-                if body or tag_names
-                else ""
-            )
-
             answer = await self.query_api(query, body, tag_names)
             show_help = self.should_show_help_button(thread.parent_id)
+
             await thread.send(
                 answer,
                 view=SupportView(
@@ -280,11 +358,21 @@ class SelfHelp(commands.Cog):
 
         if message.author.bot:
             return
-        if (
-            message.channel.id in SELFHELP_CHANNEL_IDS
-            or message.channel.id in SOLVED_ONLY_CHANNEL_IDS
-        ):
-            return
+
+        if isinstance(message.channel, discord.Thread):
+            lowered = message.content.lower()
+            if (
+                message.channel.owner_id == message.author.id
+                and message.channel.id not in self.hint_sent_threads
+                and any(
+                    kw in lowered
+                    for kw in ["thank you", "thanks", "ty", "solved", "resolved"]
+                )
+            ):
+                await message.channel.send(
+                    "-# If your issue is resolved, you can use the **Mark as Solved** button or type `/solved` to close the thread."
+                )
+                self.hint_sent_threads.add(message.channel.id)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -317,8 +405,7 @@ class SelfHelp(commands.Cog):
         await thread.send(
             answer,
             view=SupportView(
-                thread_owner=payload.user_id,
-                parent_channel_id=channel.id,
+                thread_owner=payload.user_id, parent_channel_id=channel.id
             ),
         )
 
