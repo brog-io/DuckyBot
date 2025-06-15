@@ -153,10 +153,11 @@ class SelfHelp(commands.Cog):
             return
 
         close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
-        timer_message = await interaction.response.send_message(
+        await interaction.response.send_message(
             f"Thread marked as solved. It will be closed in <t:{close_time}:R>.",
             ephemeral=False,
         )
+        timer_message = await interaction.original_response()
 
         try:
             if isinstance(thread.parent, discord.ForumChannel):
