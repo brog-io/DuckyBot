@@ -32,6 +32,17 @@ class SelfHelp(commands.Cog):
         self.solved_command_id = None
         self.unsolve_command_id = None
 
+    async def post_setup(self):
+        try:
+            commands = await self.bot.tree.fetch_commands()
+            for cmd in commands:
+                if cmd.name == "solved":
+                    self.solved_command_id = cmd.id
+                elif cmd.name == "unsolve":
+                    self.unsolve_command_id = cmd.id
+        except Exception as e:
+            logger.error(f"Failed to fetch command IDs: {e}")
+
     async def query_api(
         self, title: str, body: str = "", tags: list[str] = None
     ) -> str:
@@ -276,11 +287,4 @@ class SelfHelp(commands.Cog):
 
 
 async def setup(bot):
-    cog = SelfHelp(bot)
-    await bot.add_cog(cog)
-    solved_cmd = bot.tree.get_command("solved")
-    unsolve_cmd = bot.tree.get_command("unsolve")
-    if solved_cmd:
-        cog.solved_command_id = solved_cmd.id
-    if unsolve_cmd:
-        cog.unsolve_command_id = unsolve_cmd.id
+    await bot.add_cog(SelfHelp(bot))

@@ -107,6 +107,10 @@ class EnteBot(commands.Bot):
             self.add_view(star_view)
             self.logger.info("Attempting to sync commands...")
             await self.tree.sync()
+            cog = self.get_cog("SelfHelp")
+            if cog and hasattr(cog, "post_setup"):
+                await cog.post_setup()
+                self.logger.info("Post-setup hook executed for SelfHelp")
             self.logger.info("Command sync completed")
         except Exception as e:
             self.logger.error(f"Error in setup_hook: {e}", exc_info=True)
