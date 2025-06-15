@@ -128,7 +128,7 @@ class SupportView(ui.View):
 
             close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
             await interaction.response.send_message(
-                f"Thread marked as solved. It will be automatically closed <t:{close_time}:R>. Use `/unsolve` to cancel.",
+                f"Thread marked as solved. It will be automatically closed <t:{close_time}:R>. Use </unsolve:1383537581110853685> to cancel.",
                 ephemeral=False,
             )
 
@@ -361,13 +361,38 @@ class SelfHelp(commands.Cog):
 
         if isinstance(message.channel, discord.Thread):
             lowered = message.content.lower()
+            positive_keywords = [
+                "thank you",
+                "thanks",
+                "ty",
+                "solved",
+                "resolved",
+                "thx",
+                "appreciate",
+                "helped",
+                "fixed",
+                "tsym",
+            ]
+            negative_keywords = [
+                "not",
+                "didn't",
+                "didnt",
+                "doesn't",
+                "doesnt",
+                "wasn't",
+                "wasnt",
+                "isn't",
+                "isnt",
+                "unsolved",
+                "didn’t",
+                "didnt",
+            ]
+
             if (
                 message.channel.owner_id == message.author.id
                 and message.channel.id not in self.hint_sent_threads
-                and any(
-                    kw in lowered
-                    for kw in ["thank you", "thanks", "ty", "solved", "resolved"]
-                )
+                and any(kw in lowered for kw in positive_keywords)
+                and not any(nk in lowered for nk in negative_keywords)
             ):
                 await message.reply(
                     "-# If your issue is resolved, you can use the **Mark as Solved** button or type `/solved` to close the thread.",
