@@ -395,7 +395,7 @@ class SelfHelp(commands.Cog):
                 and not any(nk in lowered for nk in negative_keywords)
             ):
                 await message.reply(
-                    "-# If your issue is resolved, you can use the **Mark as Solved** button or type `/solved` to close the thread.",
+                    "-# If your issue is resolved, you can use the **Mark as Solved** button or use </solved:1383537581110853686> to close the thread.",
                     mention_author=True,
                 )
                 self.hint_sent_threads.add(message.channel.id)
