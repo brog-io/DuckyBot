@@ -369,8 +369,9 @@ class SelfHelp(commands.Cog):
                     for kw in ["thank you", "thanks", "ty", "solved", "resolved"]
                 )
             ):
-                await message.channel.send(
-                    "-# If your issue is resolved, you can use the **Mark as Solved** button or type `/solved` to close the thread."
+                await message.reply(
+                    "-# If your issue is resolved, you can use the **Mark as Solved** button or type `/solved` to close the thread.",
+                    mention_author=True,
                 )
                 self.hint_sent_threads.add(message.channel.id)
 
