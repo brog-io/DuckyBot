@@ -110,9 +110,12 @@ class SelfHelp(commands.Cog):
                     break
 
         elif thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
-            await thread.send(
-                "If your issue is solved, please archive your thread manually."
+            solved_hint = (
+                f"</solved:{self.solved_command_id}>"
+                if self.solved_command_id
+                else "`/solved`"
             )
+            await thread.send(f"If your issue is solved, please use {solved_hint}")
 
     @app_commands.command(
         name="solved", description="Manually mark a thread as solved."
