@@ -108,7 +108,7 @@ class SelfHelp(commands.Cog):
                 else "`/solved`"
             )
             await thread.send(
-                f"{answer}\nIf your issue is resolved, please use the {solved_hint} command to close this thread."
+                f"{answer}\n\n-# If your issue is resolved, please use the {solved_hint} command to close this thread."
             )
 
             async for msg in thread.history(limit=5):
