@@ -180,7 +180,7 @@ class SelfHelp(commands.Cog):
     async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
         try:
             await asyncio.sleep(delay)
-            await thread.edit(locked=True, archived=True)
+            await thread.edit(archived=True, locked=True)
             self.pending_closures.pop(thread.id, None)
             await thread.send("This thread is now closed.")
         except asyncio.CancelledError:
