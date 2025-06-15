@@ -162,8 +162,18 @@ class SupportView(ui.View):
             except Exception as e:
                 await thread.send(f"Error tagging thread: {e}")
 
-            self.disabled = True
-            await interaction.message.edit(view=view)
+            # Recreate view with proper help button visibility
+            show_help = view.parent_channel_id not in SOLVED_ONLY_CHANNEL_IDS
+            new_view = SupportView(
+                bot=view.bot,
+                thread_owner=view.thread_owner,
+                parent_channel_id=view.parent_channel_id,
+                show_help_button=show_help,
+            )
+            for item in new_view.children:
+                if isinstance(item, ui.Button) and item.custom_id == self.custom_id:
+                    item.disabled = True
+            await interaction.message.edit(view=new_view)
 
             task = asyncio.create_task(cog.delayed_close_thread(thread))
             cog.pending_closures[thread.id] = task
