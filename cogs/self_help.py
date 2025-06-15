@@ -260,6 +260,7 @@ class SelfHelp(commands.Cog):
             if (
                 message.channel.owner_id == message.author.id
                 and message.channel.id not in self.hint_sent_threads
+                and message.id != message.channel.id
                 and any(
                     kw in lowered
                     for kw in [
