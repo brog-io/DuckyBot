@@ -62,17 +62,16 @@ class SelfHelp(commands.Cog):
                     else "Sorry, I couldn't find an answer."
                 )
 
-
-async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
-    try:
-        await asyncio.sleep(delay)
-        await thread.send("This thread is now closed.")
-        await thread.edit(archived=True, locked=True)
-        self.pending_closures.pop(thread.id, None)
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error(f"Failed to close thread {thread.id}: {e}")
+    async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
+        try:
+            await asyncio.sleep(delay)
+            await thread.send("This thread is now closed.")
+            await thread.edit(archived=True, locked=True)
+            self.pending_closures.pop(thread.id, None)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Failed to close thread {thread.id}: {e}")
 
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
@@ -154,7 +153,7 @@ async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
             return
 
         close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
-        await interaction.response.send_message(
+        timer_message = await interaction.response.send_message(
             f"Thread marked as solved. It will be closed in <t:{close_time}:R>.",
             ephemeral=False,
         )
@@ -178,7 +177,11 @@ async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
             await thread.send(f"Error tagging thread: {e}")
 
         task = asyncio.create_task(self.delayed_close_thread(thread))
-        self.pending_closures[thread.id] = task
+        # Store both the task and the timer message id for removal on unsolve
+        self.pending_closures[thread.id] = {
+            "task": task,
+            "timer_message_id": timer_message.id,
+        }
 
     @app_commands.command(
         name="unsolve", description="Cancel auto-close and reopen thread"
@@ -201,7 +204,16 @@ async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
             return
 
         if thread.id in self.pending_closures:
-            self.pending_closures[thread.id].cancel()
+            closure = self.pending_closures[thread.id]
+            closure["task"].cancel()
+            # Attempt to delete the timer message
+            timer_message_id = closure.get("timer_message_id")
+            if timer_message_id:
+                try:
+                    msg = await thread.fetch_message(timer_message_id)
+                    await msg.delete()
+                except Exception as e:
+                    logger.warning(f"Failed to delete timer message: {e}")
             del self.pending_closures[thread.id]
 
         await thread.edit(locked=False, archived=False)
