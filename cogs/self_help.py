@@ -122,7 +122,9 @@ class SelfHelp(commands.Cog):
                 if self.solved_command_id
                 else "`/solved`"
             )
-            await thread.send(f"If your issue is solved, please use {solved_hint}")
+            await thread.send(
+                f"Remember to use {solved_hint} to mark your thread as solved once your question is answered."
+            )
 
     @app_commands.command(
         name="solved", description="Manually mark a thread as solved."
