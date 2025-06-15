@@ -62,16 +62,17 @@ class SelfHelp(commands.Cog):
                     else "Sorry, I couldn't find an answer."
                 )
 
-    async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
-        try:
-            await asyncio.sleep(delay)
-            await thread.edit(archived=True)
-            await asyncio.sleep(1)
-            await thread.edit(locked=True)
-            self.pending_closures.pop(thread.id, None)
-            await thread.send("This thread is now closed.")
-        except asyncio.CancelledError:
-            pass
+
+async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
+    try:
+        await asyncio.sleep(delay)
+        await thread.send("This thread is now closed.")
+        await thread.edit(archived=True, locked=True)
+        self.pending_closures.pop(thread.id, None)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Failed to close thread {thread.id}: {e}")
 
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
