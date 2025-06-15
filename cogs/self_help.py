@@ -43,6 +43,7 @@ class SupportView(ui.View):
         self.bot = bot
         self.thread_owner = thread_owner
         self.parent_channel_id = parent_channel_id
+        self.show_help_button = show_help_button
         if show_help_button:
             self.add_item(self.HelpButton())
         self.add_item(self.SolvedButton())
@@ -52,20 +53,15 @@ class SupportView(ui.View):
     ) -> bool:
         if user.id == self.thread_owner:
             return True
-
         if thread and self.thread_owner == 0 and user.id == thread.owner_id:
             return True
-
         if thread and user.id == thread.owner_id:
             return True
-
         if user.guild_permissions.manage_threads:
             return True
-
         for role in user.roles:
             if role.id in MOD_ROLE_IDS:
                 return True
-
         return False
 
     class HelpButton(ui.Button):
@@ -84,6 +80,12 @@ class SupportView(ui.View):
                 if isinstance(interaction.channel, discord.Thread)
                 else None
             )
+
+            if not view.show_help_button:
+                await interaction.response.send_message(
+                    "This button is not available in this channel.", ephemeral=True
+                )
+                return
 
             if not view.is_authorized(interaction.user, thread):
                 await interaction.response.send_message(
@@ -238,6 +240,44 @@ class SelfHelp(commands.Cog):
 
         task = asyncio.create_task(self.delayed_close_thread(thread))
         self.pending_closures[thread.id] = task
+
+    @app_commands.command(
+        name="unsolve", description="Cancel auto-close and reopen thread"
+    )
+    async def unsolve(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.response.send_message(
+                "This command must be used in a thread.", ephemeral=True
+            )
+            return
+
+        if (
+            thread.owner_id != interaction.user.id
+            and not interaction.user.guild_permissions.manage_threads
+        ):
+            await interaction.response.send_message(
+                "You don't have permission to unsolve this thread.", ephemeral=True
+            )
+            return
+
+        if thread.id in self.pending_closures:
+            self.pending_closures[thread.id].cancel()
+            del self.pending_closures[thread.id]
+
+        await thread.edit(locked=False, archived=False)
+
+        if isinstance(thread.parent, discord.ForumChannel):
+            solved_tag_id = SOLVED_TAG_IDS.get(thread.parent.id)
+            if solved_tag_id:
+                new_tags = [
+                    tag for tag in thread.applied_tags if tag.id != solved_tag_id
+                ]
+                await thread.edit(applied_tags=new_tags)
+
+        await interaction.response.send_message(
+            "Thread has been reopened and unmarked as solved."
+        )
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
