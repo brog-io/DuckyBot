@@ -239,6 +239,150 @@ class SelfHelp(commands.Cog):
         task = asyncio.create_task(self.delayed_close_thread(thread))
         self.pending_closures[thread.id] = task
 
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        if (
+            thread.parent_id not in SELFHELP_CHANNEL_IDS
+            and thread.parent_id not in SOLVED_ONLY_CHANNEL_IDS
+        ):
+            return
+        await asyncio.sleep(1)
+        await self.process_forum_thread(thread)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if (
+            isinstance(message.channel, discord.Thread)
+            and message.channel.parent_id
+            in SELFHELP_CHANNEL_IDS + SOLVED_ONLY_CHANNEL_IDS
+            and message.channel.owner_id == message.author.id
+            and message.id == message.channel.id
+        ):
+            await self.process_forum_thread(message.channel, initial_message=message)
+
+        if message.author.bot:
+            return
+
+        if isinstance(message.channel, discord.Thread):
+            lowered = message.content.lower()
+            if (
+                message.channel.owner_id == message.author.id
+                and message.channel.id not in self.hint_sent_threads
+                and any(
+                    kw in lowered
+                    for kw in [
+                        "thank you",
+                        "thanks",
+                        "ty",
+                        "solved",
+                        "resolved",
+                        "thx",
+                        "appreciate",
+                        "helped",
+                        "fixed",
+                        "tsym",
+                    ]
+                )
+                and not any(
+                    nk in lowered
+                    for nk in [
+                        "not",
+                        "didn't",
+                        "didnt",
+                        "doesn't",
+                        "doesnt",
+                        "wasn't",
+                        "wasnt",
+                        "isn't",
+                        "isnt",
+                        "unsolved",
+                        "didn’t",
+                        "didnt",
+                    ]
+                )
+            ):
+                await message.reply(
+                    "-# If your issue is resolved, you can use the **Mark as Solved** button or use </solved:1383537581110853686> to close the thread.",
+                    mention_author=True,
+                )
+                self.hint_sent_threads.add(message.channel.id)
+
+    async def query_api(
+        self, title: str, body: str = "", tags: list[str] = None
+    ) -> str:
+        tags_text = ", ".join(tags) if tags else "None"
+        prompt = f"Title: {title}\nTags: {tags_text}\nMessage: {body.strip() or 'No content provided.'}"
+        payload = {"query": prompt, "key": API_KEY}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.poggers.win/api/ente/docs-search", json=payload
+            ) as resp:
+                if resp.status != 200:
+                    return f"API error: {resp.status}"
+                data = await resp.json()
+                return (
+                    data.get("answer", "No answer returned.")
+                    if data.get("success")
+                    else "Sorry, I couldn't find an answer."
+                )
+
+    async def process_forum_thread(
+        self, thread: discord.Thread, initial_message: discord.Message = None
+    ):
+        if thread.id in self.processed_threads:
+            return
+        self.processed_threads.add(thread.id)
+
+        if thread.parent_id in SELFHELP_CHANNEL_IDS:
+            await thread.send("Analyzing your question, please wait...")
+
+            body = initial_message.content if initial_message else ""
+            if not body:
+                try:
+                    async for msg in thread.history(limit=1, oldest_first=True):
+                        body = msg.content
+                        break
+                except Exception as e:
+                    logger.error(f"Failed to fetch first message: {e}")
+
+            tag_names = []
+            if isinstance(thread.parent, discord.ForumChannel):
+                all_tags = {tag.id: tag.name for tag in thread.parent.available_tags}
+                tag_names = [
+                    all_tags.get(t.id if hasattr(t, "id") else t, "")
+                    for t in thread.applied_tags or []
+                ]
+
+            query = thread.name or body
+            answer = await self.query_api(query, body, tag_names)
+            show_help = thread.parent_id not in SOLVED_ONLY_CHANNEL_IDS
+
+            await thread.send(
+                answer,
+                view=SupportView(
+                    bot=self.bot,
+                    thread_owner=thread.owner_id,
+                    parent_channel_id=thread.parent_id,
+                    show_help_button=show_help,
+                ),
+            )
+
+            async for msg in thread.history(limit=5):
+                if msg.content.startswith("Analyzing your question"):
+                    await msg.delete()
+                    break
+
+        elif thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
+            await thread.send(
+                "Use the button below to mark your question as solved.",
+                view=SupportView(
+                    bot=self.bot,
+                    thread_owner=thread.owner_id,
+                    parent_channel_id=thread.parent_id,
+                    show_help_button=False,
+                ),
+            )
+
 
 async def setup(bot):
     await bot.add_cog(SelfHelp(bot))
