@@ -102,7 +102,14 @@ class SelfHelp(commands.Cog):
 
             query = thread.name or body
             answer = await self.query_api(query, body, tag_names)
-            await thread.send(answer)
+            solved_hint = (
+                f"</solved:{self.solved_command_id}>"
+                if self.solved_command_id
+                else "`/solved`"
+            )
+            await thread.send(
+                f"{answer}\n If your issue is resolved, please use the `/solved` command to close this thread."
+            )
 
             async for msg in thread.history(limit=5):
                 if msg.content.startswith("Analyzing your question"):
