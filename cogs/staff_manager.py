@@ -3,9 +3,7 @@ from discord.ext import commands
 import logging
 
 STAFF_ROLE_IDS = [950276268593659925, 956466393514143814]
-
 TARGET_CHANNEL_ID = 1381183345626447944
-
 NOTEPAD_EMOJI = "🗒️"
 
 logger = logging.getLogger(__name__)
@@ -33,8 +31,30 @@ class MessageNoteLogger(commands.Cog):
         if not member or not self.is_staff(member):
             return
 
+        channel = None
+        thread_info = None
+
         channel = guild.get_channel(payload.channel_id)
+
         if not channel:
+            try:
+                channel = await guild.fetch_channel(payload.channel_id)
+                if isinstance(channel, discord.Thread):
+                    thread_info = {
+                        "name": channel.name,
+                        "parent": channel.parent,
+                        "is_forum_post": isinstance(
+                            channel.parent, discord.ForumChannel
+                        ),
+                    }
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch channel/thread {payload.channel_id}: {e}"
+                )
+                return
+
+        if not channel:
+            logger.warning(f"Could not find channel/thread {payload.channel_id}")
             return
 
         try:
@@ -56,11 +76,21 @@ class MessageNoteLogger(commands.Cog):
             color=0xFFCD3F,
             timestamp=message.created_at,
         )
+
         embed.set_author(
             name=message.author.display_name,
             icon_url=message.author.display_avatar.url,
         )
-        embed.add_field(name="Channel", value=channel.mention)
+
+        if thread_info and thread_info["is_forum_post"]:
+            embed.add_field(
+                name="Forum Thread",
+                value=f"{thread_info['parent'].mention} → **{thread_info['name']}**",
+                inline=False,
+            )
+        else:
+            embed.add_field(name="Channel", value=channel.mention, inline=False)
+
         embed.set_footer(text=f"User ID: {message.author.id}")
 
         if message.attachments:
@@ -75,7 +105,10 @@ class MessageNoteLogger(commands.Cog):
             )
         )
 
-        await log_channel.send(embed=embed, view=view)
+        try:
+            await log_channel.send(embed=embed, view=view)
+        except Exception as e:
+            logger.error(f"Failed to send log message: {e}")
 
 
 async def setup(bot):
