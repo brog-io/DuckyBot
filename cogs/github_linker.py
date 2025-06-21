@@ -18,20 +18,16 @@ API_KEY = os.getenv("LOOKUP_API_KEY")  # Must be set as env var!
 
 
 class LinkGithubButton(ui.View):
-    def __init__(self, discord_id: str, worker_url: str, *, timeout=120):
+    def __init__(self, discord_id: str, state: str, *, timeout=120):
         super().__init__(timeout=timeout)
-        self.state = self.random_state(32)
-        self.discord_id = discord_id
-        self.worker_url = worker_url
-
-    @staticmethod
-    def random_state(length=32):
-        alphabet = string.ascii_letters + string.digits
-        return "".join(secrets.choice(alphabet) for _ in range(length))
-
-    @ui.button(label="Link GitHub", style=discord.ButtonStyle.link)
-    async def link_button(self, interaction: Interaction, button: ui.Button):
-        pass  # Button is just a link, handled below
+        link_url = f"{WORKER_URL}/link/discord?state={state}"
+        self.add_item(
+            discord.ui.Button(
+                label="Link GitHub via Discord",
+                url=link_url,
+                style=discord.ButtonStyle.link,
+            )
+        )
 
 
 class GithubRolesCog(commands.Cog):
@@ -54,7 +50,7 @@ class GithubRolesCog(commands.Cog):
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        "Failed to lookup your GitHub username. Have you linked your account?",
+                        f"Lookup failed. Status: {resp.status}. Text: {await resp.text()}",
                         ephemeral=True,
                     )
                     return
@@ -162,7 +158,7 @@ class GithubRolesCog(commands.Cog):
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        "Failed to lookup your GitHub info. Have you linked your account?",
+                        f"Lookup failed. Status: {resp.status}. Text: {await resp.text()}",
                         ephemeral=True,
                     )
                     return
@@ -231,28 +227,26 @@ class GithubRolesCog(commands.Cog):
     async def linkgithub(self, interaction: Interaction):
         discord_id = str(interaction.user.id)
         state = os.urandom(16).hex()
-        headers = {"x-api-key": API_KEY}
+        headers = {
+            "x-api-key": API_KEY,
+            "Content-Type": "application/json",
+        }
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{WORKER_URL}/internal/setstate?state={state}&discord_id={discord_id}&key={API_KEY}"
+            async with session.put(
+                f"{WORKER_URL}/api/stateset",
+                headers=headers,
+                json={"state": state, "discord_id": discord_id, "ttl": 600},
             ) as resp:
                 if resp.status != 200:
+                    text = await resp.text()
                     await interaction.response.send_message(
-                        "Failed to generate a secure link. Try again later.",
+                        f"Failed to generate a secure link. Try again later.\nStatus: {resp.status}\nResponse: {text}",
                         ephemeral=True,
                     )
                     return
 
-        link_url = f"{WORKER_URL}/link/discord?state={state}"
-        view = discord.ui.View()
-        view.add_item(
-            discord.ui.Button(
-                label="Link GitHub via Discord",
-                url=link_url,
-                style=discord.ButtonStyle.link,
-            )
-        )
+        view = LinkGithubButton(discord_id, state)
         await interaction.response.send_message(
             "Click the button below to link your GitHub account. After linking, use `/role contributor` or `/role stargazer`.",
             view=view,
