@@ -15,6 +15,7 @@ BLOG_FEED = {
     "url": "https://ente.io/rss.xml",
     "role_mention": "<@&1050340002028077106>",
     "forum_channel_id": 1121470028223623229,
+    "button_text": "Read More",
 }
 
 MASTODON_FEED = {
@@ -196,7 +197,10 @@ class RSSFeedCog(commands.Cog):
                     forum_channel = self.bot.get_channel(BLOG_FEED["forum_channel_id"])
                     for entry in reversed(new_entries):
                         await self.send_blog_post(
-                            forum_channel, entry, BLOG_FEED["role_mention"]
+                            forum_channel,
+                            entry,
+                            BLOG_FEED["role_mention"],
+                            BLOG_FEED["button_text"],
                         )
                     self.state[BLOG_FEED["url"]] = entry_id
                     changed = True
@@ -240,12 +244,15 @@ class RSSFeedCog(commands.Cog):
             return d.feed.image.href
         return ENTE_ICON_URL
 
-    async def send_blog_post(self, forum_channel, entry, role_mention: str):
+    async def send_blog_post(
+        self, forum_channel, entry, role_mention: str, button_text: str
+    ):
         title = get_first_str(entry.title)
         url = entry.link
         if forum_channel and isinstance(forum_channel, discord.ForumChannel):
-            await forum_channel.create_thread(
-                name=title[:95], content=f"📰 [**{title}**]({url}) **|** {role_mention}"
+            content = f"📰 [**{title}**]({url}) **|** {role_mention}"
+            thread = await forum_channel.create_thread(
+                name=title[:95], content=content, view=LinkButton(url, button_text)
             )
 
     async def send_mastodon_embed(
