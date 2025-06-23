@@ -3,9 +3,8 @@ from discord import app_commands, Interaction, ui
 from discord.ext import commands
 from dotenv import load_dotenv
 import aiohttp
-import secrets
-import string
 import os
+from urllib.parse import urlencode
 
 load_dotenv()
 
@@ -14,17 +13,17 @@ ROLE_NAME = "Contributor"
 STAR_ROLE_NAME = "Stargazer"
 REPO_OWNER = "ente-io"
 REPO_NAME = "ente"
-API_KEY = os.getenv("LOOKUP_API_KEY")  # Must be set as env var!
+API_KEY = os.getenv("LOOKUP_API_KEY")
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 
 
 class LinkGithubButton(ui.View):
-    def __init__(self, discord_id: str, state: str, *, timeout=120):
+    def __init__(self, oauth_url: str, *, timeout=120):
         super().__init__(timeout=timeout)
-        link_url = f"{WORKER_URL}/link/discord?state={state}"
         self.add_item(
             discord.ui.Button(
                 label="Link GitHub via Discord",
-                url=link_url,
+                url=oauth_url,
                 style=discord.ButtonStyle.link,
             )
         )
@@ -36,142 +35,170 @@ class GithubRolesCog(commands.Cog):
 
     role = app_commands.Group(name="role", description="Get GitHub-related roles.")
 
+    @app_commands.command(
+        name="linkgithub", description="Link your GitHub account to your Discord."
+    )
+    async def linkgithub(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        discord_id = str(interaction.user.id)
+        state = os.urandom(16).hex()
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{WORKER_URL}/internal/setstate",
+                params={"state": state, "discord_id": discord_id, "key": API_KEY},
+            ) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send(
+                        f"Failed to generate a secure link.\nStatus: {resp.status}\nText: {await resp.text()}",
+                        ephemeral=True,
+                    )
+                    return
+
+        params = {
+            "client_id": DISCORD_CLIENT_ID,
+            "redirect_uri": f"{WORKER_URL}/auth/discord/callback",
+            "response_type": "code",
+            "scope": "connections",
+            "state": state,
+        }
+        oauth_url = f"https://discord.com/oauth2/authorize?{urlencode(params)}"
+        view = LinkGithubButton(oauth_url)
+
+        await interaction.followup.send(
+            "Click the button below to link your GitHub account. Then run `/role contributor` or `/role stargazer`.",
+            view=view,
+            ephemeral=True,
+        )
+
     @role.command(
         name="contributor", description="Get the Contributor role for ente-io/ente."
     )
     async def contributor(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         discord_id = str(interaction.user.id)
-        headers = {"x-api-key": API_KEY}
 
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}", headers=headers
+                f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
+                headers={"x-api-key": API_KEY},
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        f"Lookup failed. Status: {resp.status}. Text: {await resp.text()}",
+                        f"Lookup failed: {resp.status} {await resp.text()}",
                         ephemeral=True,
                     )
                     return
                 data = await resp.json()
-                github_username = data.get("github_username")
-        if not github_username:
+
+        github_id = data.get("github_id")
+        github_username = data.get("github_username")
+        if not github_id:
             await interaction.followup.send(
-                "You haven't linked your GitHub account yet. Use `/linkgithub` first.",
+                "You haven't linked your GitHub account. Use `/linkgithub`.",
                 ephemeral=True,
             )
             return
 
         gh_headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "brogio-discord-github-link",
+            "User-Agent": "brogio-discord-link",
         }
+
         contributors = []
         page = 1
-        per_page = 100
         while True:
-            url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contributors?per_page={per_page}&page={page}&anon=1"
+            url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contributors?per_page=100&page={page}&anon=1"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=gh_headers) as resp:
                     if resp.status != 200:
                         break
-                    new_contribs = await resp.json()
-                    if not new_contribs:
+                    page_data = await resp.json()
+                    if not page_data:
                         break
-                    contributors.extend(new_contribs)
-                    if len(new_contribs) < per_page:
+                    contributors.extend(page_data)
+                    if len(page_data) < 100:
                         break
                     page += 1
 
-        is_commit_contributor = any(
-            (c.get("login") or "").lower() == github_username.lower()
-            for c in contributors
-            if c.get("login")
+        is_contributor = any(
+            str(c.get("id")) == str(github_id) for c in contributors if c.get("id")
         )
 
-        is_pr_contributor = False
-        page = 1
-        max_pages = 10
-        while page <= max_pages:
-            pr_api_url = (
-                f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/pulls"
-                f"?state=closed&per_page=100&page={page}"
-            )
-            async with aiohttp.ClientSession() as session:
-                async with session.get(pr_api_url, headers=gh_headers) as resp:
-                    if resp.status != 200:
-                        break
-                    prs = await resp.json()
-                    if not prs:
-                        break
-                    for pr in prs:
-                        if pr.get("user", {}).get(
-                            "login", ""
-                        ).lower() == github_username.lower() and pr.get("merged_at"):
-                            is_pr_contributor = True
+        if not is_contributor:
+            page = 1
+            while page <= 10:
+                url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/pulls?state=closed&per_page=100&page={page}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=gh_headers) as resp:
+                        if resp.status != 200:
                             break
-                    if is_pr_contributor or len(prs) < 100:
-                        break
-            page += 1
+                        prs = await resp.json()
+                        for pr in prs:
+                            user = pr.get("user")
+                            if (
+                                user
+                                and user.get("id") == github_id
+                                and pr.get("merged_at")
+                            ):
+                                is_contributor = True
+                                break
+                        if is_contributor or len(prs) < 100:
+                            break
+                page += 1
 
-        if is_commit_contributor or is_pr_contributor:
-            guild = interaction.guild
-            member = interaction.user
-            role = discord.utils.get(guild.roles, name=ROLE_NAME)
+        if is_contributor:
+            role = discord.utils.get(interaction.guild.roles, name=ROLE_NAME)
             if not role:
                 await interaction.followup.send(
-                    f"The role `{ROLE_NAME}` does not exist. Ask an admin to create it.",
-                    ephemeral=True,
+                    f"The role `{ROLE_NAME}` does not exist.", ephemeral=True
                 )
                 return
             try:
-                await member.add_roles(
-                    role, reason=f"GitHub contributor to {REPO_OWNER}/{REPO_NAME}"
-                )
+                await interaction.user.add_roles(role, reason="GitHub contributor")
                 await interaction.followup.send(
-                    f"✅ {member.mention}, you are a contributor to `{REPO_OWNER}/{REPO_NAME}` and have been given the `{ROLE_NAME}` role!",
+                    f"{interaction.user.mention}, you’ve been given the `{ROLE_NAME}` role!",
                     ephemeral=True,
                 )
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I do not have permission to assign that role.", ephemeral=True
+                    "I lack permission to assign roles.", ephemeral=True
                 )
         else:
             await interaction.followup.send(
-                f"❌ {interaction.user.mention}, you are **not** a contributor to `{REPO_OWNER}/{REPO_NAME}` ({github_username}).",
+                f"{interaction.user.mention}, you're not a contributor to `{REPO_OWNER}/{REPO_NAME}` ({github_username}).",
                 ephemeral=True,
             )
 
     @role.command(
         name="stargazer",
-        description="Get the Stargazer role if you have starred ente-io/ente.",
+        description="Get the Stargazer role if you starred ente-io/ente.",
     )
     async def starred(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         discord_id = str(interaction.user.id)
-        headers = {"x-api-key": API_KEY}
 
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}", headers=headers
+                f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
+                headers={"x-api-key": API_KEY},
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        f"Lookup failed. Status: {resp.status}. Text: {await resp.text()}",
+                        f"Lookup failed: {resp.status} {await resp.text()}",
                         ephemeral=True,
                     )
                     return
                 data = await resp.json()
-                github_username = data.get("github_username")
+
+        github_username = data.get("github_username")
         if not github_username:
             await interaction.followup.send(
-                "You haven't linked your GitHub account yet. Use `/linkgithub` first.",
+                "You haven't linked your GitHub account. Use `/linkgithub`.",
                 ephemeral=True,
             )
             return
 
-        # Check if the user has publicly starred the repo
         starred = False
         page = 1
         while page <= 10:
@@ -190,68 +217,30 @@ class GithubRolesCog(commands.Cog):
                         break
                     if len(stars) < 100:
                         break
-                    page += 1
+            page += 1
 
         if starred:
-            guild = interaction.guild
-            member = interaction.user
-            role = discord.utils.get(guild.roles, name=STAR_ROLE_NAME)
+            role = discord.utils.get(interaction.guild.roles, name=STAR_ROLE_NAME)
             if not role:
                 await interaction.followup.send(
-                    f"The role `{STAR_ROLE_NAME}` does not exist. Ask an admin to create it.",
-                    ephemeral=True,
+                    f"The role `{STAR_ROLE_NAME}` does not exist.", ephemeral=True
                 )
                 return
             try:
-                await member.add_roles(
-                    role, reason=f"Starred GitHub repo {REPO_OWNER}/{REPO_NAME}"
-                )
+                await interaction.user.add_roles(role, reason="GitHub stargazer")
                 await interaction.followup.send(
-                    f"🌟 {member.mention}, you have starred `{REPO_OWNER}/{REPO_NAME}` and have been given the `{STAR_ROLE_NAME}` role!",
+                    f"{interaction.user.mention}, you’ve been given the `{STAR_ROLE_NAME}` role!",
                     ephemeral=True,
                 )
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I do not have permission to assign that role.", ephemeral=True
+                    "I lack permission to assign roles.", ephemeral=True
                 )
         else:
             await interaction.followup.send(
-                f"❌ {interaction.user.mention}, you have **not** starred `{REPO_OWNER}/{REPO_NAME}` ({github_username}).",
+                f"{interaction.user.mention}, you haven’t starred `{REPO_OWNER}/{REPO_NAME}` ({github_username}).",
                 ephemeral=True,
             )
-
-    @app_commands.command(
-        name="linkgithub",
-        description="Link your GitHub account to your Discord securely.",
-    )
-    async def linkgithub(self, interaction: Interaction):
-        discord_id = str(interaction.user.id)
-        state = os.urandom(16).hex()
-        headers = {
-            "x-api-key": API_KEY,
-            "Content-Type": "application/json",
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.put(
-                f"{WORKER_URL}/api/stateset",
-                headers=headers,
-                json={"state": state, "discord_id": discord_id, "ttl": 600},
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    await interaction.response.send_message(
-                        f"Failed to generate a secure link. Try again later.\nStatus: {resp.status}\nResponse: {text}",
-                        ephemeral=True,
-                    )
-                    return
-
-        view = LinkGithubButton(discord_id, state)
-        await interaction.response.send_message(
-            "Click the button below to link your GitHub account. After linking, use `/role contributor` or `/role stargazer`.",
-            view=view,
-            ephemeral=True,
-        )
 
 
 async def setup(bot):
