@@ -44,9 +44,10 @@ class GithubRolesCog(commands.Cog):
         state = os.urandom(16).hex()
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{WORKER_URL}/internal/setstate",
-                params={"state": state, "discord_id": discord_id, "key": API_KEY},
+            async with session.put(
+                f"{WORKER_URL}/api/stateset",
+                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                json={"state": state, "discord_id": discord_id, "ttl": 600},
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
