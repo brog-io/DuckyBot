@@ -15,7 +15,7 @@ BLOG_FEED = {
     "url": "https://ente.io/rss.xml",
     "role_mention": "<@&1050340002028077106>",
     "forum_channel_id": 1121470028223623229,
-    "button_text": "Read More",
+    "button_text": "Link",
 }
 
 MASTODON_FEED = {
