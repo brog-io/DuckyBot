@@ -7,6 +7,7 @@ import os
 import asyncio
 import logging
 from urllib.parse import urlencode
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -124,80 +125,100 @@ class GithubRolesCog(commands.Cog):
         except Exception:
             return None
 
-    async def get_sponsorship_status(
-        self, github_id: str, sponsorable: str, github_username: str
-    ) -> str:
-        """
-        Return 'active' if user is currently sponsoring,
-        'inactive' if they have sponsored in the past but not currently,
-        or 'none' if they've never sponsored.
-        We fetch via repository->owner so it works for both Users and Orgs.
-        """
-        if not GITHUB_TOKEN:
-            return "none"
 
-        # fetch the sponsorships from the repo's owner (user or org)
-        query = """
-        query($owner: String!, $repo: String!, $after: String) {
-          repository(owner: $owner, name: $repo) {
-            owner {
-              __typename
-              ... on Sponsorable {
-                sponsorshipsAsMaintainer(first: 100, after: $after) {
-                  pageInfo { hasNextPage, endCursor }
-                  nodes {
-                    sponsor { id, login }
-                    isActive
-                  }
-                }
-              }
-            }
+async def get_sponsorship_status(
+    self, github_id: str, sponsorable: str, github_username: str
+) -> str:
+    """
+    Return 'active' if user is currently sponsoring OR made a one-time payment within 30 days,
+    'inactive' if they have sponsored in the past but not currently,
+    or 'none' if they've never sponsored.
+    Match on both Relay ID and login.
+    """
+    if not GITHUB_TOKEN:
+        return "none"
+
+    query = """
+    query($sponsorable: String!, $after: String) {
+      user(login: $sponsorable) {
+        sponsorshipsAsMaintainer(first: 100, after: $after) {
+          pageInfo { hasNextPage, endCursor }
+          nodes {
+            sponsor { id, login }
+            sponsorEntity { ... on User { id, login } }
+            isActive
+            isOneTimePayment
+            createdAt
           }
         }
-        """
+      }
+    }
+    """
 
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        cursor = None
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    cursor = None
 
-        async with aiohttp.ClientSession() as session:
-            while True:
-                variables = {"owner": REPO_OWNER, "repo": REPO_NAME, "after": cursor}
-                async with session.post(
-                    "https://api.github.com/graphql",
-                    headers=headers,
-                    json={"query": query, "variables": variables},
-                ) as resp:
-                    payload = await resp.json()
-                    logger.debug("GraphQL payload for sponsorships: %r", payload)
-                    if resp.status != 200:
-                        return "none"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            variables = {"sponsorable": sponsorable, "after": cursor}
+            async with session.post(
+                "https://api.github.com/graphql",
+                headers=headers,
+                json={"query": query, "variables": variables},
+            ) as resp:
+                if resp.status != 200:
+                    return "none"
+                data = await resp.json()
+                user = data.get("data", {}).get("user")
+                if not user:
+                    return "none"
+                page = user["sponsorshipsAsMaintainer"]
 
-                    repo = payload.get("data", {}).get("repository")
-                    if not repo or "owner" not in repo:
-                        return "none"
+                for node in page["nodes"]:
+                    # Try both deprecated and new sponsor fields
+                    sponsor = node.get("sponsor") or node.get("sponsorEntity") or {}
 
-                    owner = repo["owner"]
-                    # if owner isn’t Sponsorable we get no nodes
-                    nodes = owner.get("sponsorshipsAsMaintainer", {}).get("nodes", [])
-                    for node in nodes:
-                        sponsor = node.get("sponsor") or {}
-                        if (
-                            sponsor.get("id") == github_id
-                            or sponsor.get("login") == github_username
-                        ):
-                            return "active" if node.get("isActive") else "inactive"
+                    if (
+                        sponsor.get("id") == github_id
+                        or sponsor.get("login") == github_username
+                    ):
+                        is_active = node.get("isActive", False)
+                        is_one_time = node.get("isOneTimePayment", False)
 
-                    page_info = owner.get("sponsorshipsAsMaintainer", {}).get(
-                        "pageInfo", {}
-                    )
-                    if not page_info.get("hasNextPage"):
-                        break
-                    cursor = page_info.get("endCursor")
+                        # One-time payments are only "active" for 30 days
+                        if is_one_time:
+                            created_at = node.get("createdAt")
+                            if created_at:
+                                try:
+                                    # Parse GitHub's ISO 8601 datetime
+                                    payment_date = datetime.fromisoformat(
+                                        created_at.replace("Z", "+00:00")
+                                    )
+                                    now = datetime.now(timezone.utc)
+                                    days_since_payment = (now - payment_date).days
 
-        return "none"
+                                    if days_since_payment <= 30:
+                                        return "active"
+                                    else:
+                                        return "inactive"  # One-time payment older than 30 days
+                                except (ValueError, TypeError):
+                                    # If date parsing fails, treat as inactive
+                                    return "inactive"
+                            else:
+                                # No creation date available, treat as inactive
+                                return "inactive"
+
+                        # For recurring sponsorships, use the isActive field
+                        return "active" if is_active else "inactive"
+
+                if not page["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = page["pageInfo"]["endCursor"]
+
+    return "none"
 
     async def verify_role_qualification(self, github_data, role_type: str) -> bool:
         github_id = github_data.get("github_id")
