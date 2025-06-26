@@ -10,17 +10,19 @@ import logging
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 WORKER_URL = "https://brog.io"
 ROLE_NAME = "Contributor"
 STAR_ROLE_NAME = "Stargazer"
-SPONSOR_ROLE_NAME = "Sponsor"  # New sponsor role
+SPONSOR_ROLE_NAME = "Sponsor"
+INACTIVE_SPONSOR_ROLE_NAME = "Inactive Sponsor"
 REPO_OWNER = "ente-io"
 REPO_NAME = "ente"
 API_KEY = os.getenv("LOOKUP_API_KEY")
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Required for GraphQL API
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 
 class LinkGithubButton(ui.View):
@@ -71,7 +73,7 @@ class GithubRolesCog(commands.Cog):
     async def verify_guild_roles(self, guild):
         """Verify GitHub roles for all members in a guild"""
         if not GITHUB_TOKEN:
-            logger.warning(
+            logger.info(
                 f"Skipping verification for {guild.name} - no GitHub token configured"
             )
             return
@@ -125,7 +127,7 @@ class GithubRolesCog(commands.Cog):
                         await asyncio.sleep(1)
 
                 except Exception as e:
-                    logger.info(f"Error verifying {member.display_name}: {e}")
+                    logger.error(f"Error verifying {member.display_name}: {e}")
                     continue
 
         logger.info(
@@ -298,13 +300,13 @@ class GithubRolesCog(commands.Cog):
                 return False
 
     @role.command(
-        name="sponsor", description="Get the Sponsor role if you sponsor ente-io."
+        name="sponsor",
+        description="Get the appropriate sponsor role based on your current status.",
     )
     async def sponsor(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         discord_id = str(interaction.user.id)
 
-        # Check if GitHub token is configured
         if not GITHUB_TOKEN:
             await interaction.followup.send(
                 "Sponsor checking is not configured. Please contact an administrator.",
@@ -334,20 +336,38 @@ class GithubRolesCog(commands.Cog):
             )
             return
 
-        # Check if user is sponsoring the repository owner
         is_sponsor = await self.check_sponsorship(github_id, REPO_OWNER)
 
+        sponsor_role = discord.utils.get(
+            interaction.guild.roles, name=SPONSOR_ROLE_NAME
+        )
+        inactive_sponsor_role = discord.utils.get(
+            interaction.guild.roles, name=INACTIVE_SPONSOR_ROLE_NAME
+        )
+
         if is_sponsor:
-            role = discord.utils.get(interaction.guild.roles, name=SPONSOR_ROLE_NAME)
-            if not role:
+
+            if not sponsor_role:
                 await interaction.followup.send(
                     f"The role `{SPONSOR_ROLE_NAME}` does not exist.", ephemeral=True
                 )
                 return
             try:
-                await interaction.user.add_roles(role, reason="GitHub sponsor")
+                await interaction.user.add_roles(
+                    sponsor_role, reason="Active GitHub sponsor"
+                )
+
+                if (
+                    inactive_sponsor_role
+                    and inactive_sponsor_role in interaction.user.roles
+                ):
+                    await interaction.user.remove_roles(
+                        inactive_sponsor_role, reason="Now active sponsor"
+                    )
+
                 await interaction.followup.send(
-                    f"{interaction.user.mention}, you've been given the `{SPONSOR_ROLE_NAME}` role!",
+                    f"{interaction.user.mention}, you've been given the `{SPONSOR_ROLE_NAME}` role! "
+                    f"Thank you for sponsoring `{REPO_OWNER}`!",
                     ephemeral=True,
                 )
             except discord.Forbidden:
@@ -355,11 +375,35 @@ class GithubRolesCog(commands.Cog):
                     "I lack permission to assign roles.", ephemeral=True
                 )
         else:
-            await interaction.followup.send(
-                f"{interaction.user.mention}, you're not currently sponsoring `{REPO_OWNER}` ({github_username}). "
-                f"Visit https://github.com/sponsors/{REPO_OWNER} to become a sponsor!",
-                ephemeral=True,
-            )
+            if not inactive_sponsor_role:
+                await interaction.followup.send(
+                    f"You're not currently sponsoring `{REPO_OWNER}` ({github_username}). "
+                    f"Visit https://github.com/sponsors/{REPO_OWNER} to become a sponsor! "
+                    f"(The `{INACTIVE_SPONSOR_ROLE_NAME}` role doesn't exist for past sponsors)",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                await interaction.user.add_roles(
+                    inactive_sponsor_role, reason="Inactive sponsor (honor system)"
+                )
+
+                if sponsor_role and sponsor_role in interaction.user.roles:
+                    await interaction.user.remove_roles(
+                        sponsor_role, reason="No longer active sponsor"
+                    )
+
+                await interaction.followup.send(
+                    f"{interaction.user.mention}, you've been given the `{INACTIVE_SPONSOR_ROLE_NAME}` role! "
+                    f"This is for people who have previously supported `{REPO_OWNER}`. "
+                    f"Visit https://github.com/sponsors/{REPO_OWNER} to become an active sponsor again!",
+                    ephemeral=True,
+                )
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I lack permission to assign roles.", ephemeral=True
+                )
 
     @role.command(
         name="contributor", description="Get the Contributor role for ente-io/ente."
