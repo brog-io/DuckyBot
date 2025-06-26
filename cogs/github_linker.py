@@ -47,12 +47,12 @@ class GithubRolesCog(commands.Cog):
 
     @tasks.loop(hours=168)
     async def weekly_verification(self):
-        """Weekly task to verify all GitHub roles and remove or adjust invalid ones"""
+        """Weekly task to verify all GitHub roles, remove or adjust invalid ones"""
         try:
-            logger.info("Starting weekly GitHub role verification...")
+            logger.info("Starting weekly GitHub role verification,")
             for guild in self.bot.guilds:
                 await self.verify_guild_roles(guild)
-            logger.info("Weekly GitHub role verification completed.")
+            logger.info("Weekly GitHub role verification completed,")
         except Exception as e:
             logger.error(f"Error during weekly verification: {e}")
 
@@ -69,7 +69,7 @@ class GithubRolesCog(commands.Cog):
     async def verify_guild_roles(self, guild):
         if not GITHUB_TOKEN:
             logger.info(
-                f"Skipping verification for {guild.name} - no GitHub token configured"
+                f"Skipping verification for {guild.name}, no GitHub token configured"
             )
             return
 
@@ -95,7 +95,7 @@ class GithubRolesCog(commands.Cog):
                     if not still_ok:
                         await member.remove_roles(
                             role,
-                            reason=f"Weekly check: no longer qualifies for {role_type}",
+                            reason=f"Weekly check, no longer qualifies for {role_type}",
                         )
                         if role_type == "sponsor" and inactive_role:
                             await member.add_roles(
@@ -109,7 +109,7 @@ class GithubRolesCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"Error verifying {member.display_name}: {e}")
                     continue
-        logger.info(f"Guild {guild.name}: verification pass complete")
+        logger.info(f"Guild {guild.name}: verification pass complete,")
 
     async def get_github_data(self, discord_id: str):
         try:
@@ -124,11 +124,14 @@ class GithubRolesCog(commands.Cog):
         except Exception:
             return None
 
-    async def get_sponsorship_status(self, github_id: str, sponsorable: str) -> str:
+    async def get_sponsorship_status(
+        self, github_id: str, sponsorable: str, github_username: str
+    ) -> str:
         """
         Return 'active' if user is currently sponsoring,
         'inactive' if they have sponsored in the past but not currently,
         or 'none' if they've never sponsored.
+        Match on both Relay ID and login.
         """
         if not GITHUB_TOKEN:
             return "none"
@@ -139,7 +142,7 @@ class GithubRolesCog(commands.Cog):
             sponsorshipsAsMaintainer(first: 100, after: $after) {
               pageInfo { hasNextPage, endCursor }
               nodes {
-                sponsor { id }
+                sponsor { id, login }
                 isActive
               }
             }
@@ -169,7 +172,11 @@ class GithubRolesCog(commands.Cog):
                         return "none"
                     page = user["sponsorshipsAsMaintainer"]
                     for node in page["nodes"]:
-                        if node.get("sponsor", {}).get("id") == github_id:
+                        sponsor = node.get("sponsor") or {}
+                        if (
+                            sponsor.get("id") == github_id
+                            or sponsor.get("login") == github_username
+                        ):
                             return "active" if node.get("isActive") else "inactive"
                     if not page["pageInfo"]["hasNextPage"]:
                         break
@@ -184,10 +191,14 @@ class GithubRolesCog(commands.Cog):
             return False
 
         if role_type == "sponsor":
-            status = await self.get_sponsorship_status(github_id, REPO_OWNER)
+            status = await self.get_sponsorship_status(
+                github_id, REPO_OWNER, github_username
+            )
             return status == "active"
         if role_type == "inactive_sponsor":
-            status = await self.get_sponsorship_status(github_id, REPO_OWNER)
+            status = await self.get_sponsorship_status(
+                github_id, REPO_OWNER, github_username
+            )
             return status == "inactive"
         if role_type == "stargazer":
             return await self.check_stargazer_status(github_username)
@@ -210,7 +221,9 @@ class GithubRolesCog(commands.Cog):
         except Exception:
             return True
 
-    role = app_commands.Group(name="role", description="Get GitHub-related roles.")
+    role = app_commands.Group(
+        name="role", description="Get GitHub-related roles,"
+    )  # note comma
 
     @app_commands.command(
         name="linkgithub", description="Link your GitHub account to your Discord."
@@ -244,7 +257,7 @@ class GithubRolesCog(commands.Cog):
         view = LinkGithubButton(oauth_url)
 
         await interaction.followup.send(
-            "Click below to link your GitHub account, then use `/role contributor`, `/role stargazer`, or `/role sponsor`.",
+            "Click below to link your GitHub account, then use `/role contributor`, `/role stargazer`, or `/role sponsor`,",
             view=view,
             ephemeral=True,
         )
@@ -281,12 +294,14 @@ class GithubRolesCog(commands.Cog):
         github_username = data.get("github_username")
         if not github_id:
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`.",
+                "You haven't linked your GitHub account, use `/linkgithub`,",
                 ephemeral=True,
             )
             return
 
-        status = await self.get_sponsorship_status(github_id, REPO_OWNER)
+        status = await self.get_sponsorship_status(
+            github_id, REPO_OWNER, github_username
+        )
         sponsor_role = discord.utils.get(
             interaction.guild.roles, name=SPONSOR_ROLE_NAME
         )
@@ -333,7 +348,7 @@ class GithubRolesCog(commands.Cog):
                         sponsor_role, reason="No longer active sponsor"
                     )
                 await interaction.followup.send(
-                    f"{interaction.user.mention}, you have the `{INACTIVE_SPONSOR_ROLE_NAME}` role. Visit https://github.com/sponsors/{REPO_OWNER} to renew!",
+                    f"{interaction.user.mention}, you have the `{INACTIVE_SPONSOR_ROLE_NAME}` role, visit https://github.com/sponsors/{REPO_OWNER} to renew!",
                     ephemeral=True,
                 )
             except discord.Forbidden:
@@ -343,7 +358,7 @@ class GithubRolesCog(commands.Cog):
 
         else:
             await interaction.followup.send(
-                f"{interaction.user.mention}, you've never sponsored `{REPO_OWNER}` ({github_username}). Visit https://github.com/sponsors/{REPO_OWNER}!",
+                f"{interaction.user.mention}, you've never sponsored `{REPO_OWNER}` ({github_username}), visit https://github.com/sponsors/{REPO_OWNER}!",
                 ephemeral=True,
             )
 
@@ -371,7 +386,7 @@ class GithubRolesCog(commands.Cog):
         github_username = data.get("github_username")
         if not github_id:
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`.",
+                "You haven't linked your GitHub account, use `/linkgithub`,",
                 ephemeral=True,
             )
             return
@@ -442,7 +457,7 @@ class GithubRolesCog(commands.Cog):
                 )
         else:
             await interaction.followup.send(
-                f"{interaction.user.mention}, you're not a contributor to `{REPO_OWNER}/{REPO_NAME}` ({github_username}).",
+                f"{interaction.user.mention}, you're not a contributor to `{REPO_OWNER}/{REPO_NAME}` ({github_username}),",
                 ephemeral=True,
             )
 
@@ -470,7 +485,7 @@ class GithubRolesCog(commands.Cog):
         github_username = data.get("github_username")
         if not github_username:
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`.",
+                "You haven't linked your GitHub account, use `/linkgithub`,",
                 ephemeral=True,
             )
             return
@@ -514,7 +529,7 @@ class GithubRolesCog(commands.Cog):
                 )
         else:
             await interaction.followup.send(
-                f"{interaction.user.mention}, you haven't starred `{REPO_OWNER}/{REPO_NAME}` ({github_username}).",
+                f"{interaction.user.mention}, you haven't starred `{REPO_OWNER}/{REPO_NAME}` ({github_username}),",
                 ephemeral=True,
             )
 
