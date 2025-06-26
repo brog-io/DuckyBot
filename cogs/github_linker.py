@@ -131,19 +131,25 @@ class GithubRolesCog(commands.Cog):
         Return 'active' if user is currently sponsoring,
         'inactive' if they have sponsored in the past but not currently,
         or 'none' if they've never sponsored.
-        Match on both Relay ID and login.
+        We fetch via repository->owner so it works for both Users and Orgs.
         """
         if not GITHUB_TOKEN:
             return "none"
 
+        # fetch the sponsorships from the repo's owner (user or org)
         query = """
-        query($sponsorable: String!, $after: String) {
-          user(login: $sponsorable) {
-            sponsorshipsAsMaintainer(first: 100, after: $after) {
-              pageInfo { hasNextPage, endCursor }
-              nodes {
-                sponsor { id, login }
-                isActive
+        query($owner: String!, $repo: String!, $after: String) {
+          repository(owner: $owner, name: $repo) {
+            owner {
+              __typename
+              ... on Sponsorable {
+                sponsorshipsAsMaintainer(first: 100, after: $after) {
+                  pageInfo { hasNextPage, endCursor }
+                  nodes {
+                    sponsor { id, login }
+                    isActive
+                  }
+                }
               }
             }
           }
@@ -158,29 +164,38 @@ class GithubRolesCog(commands.Cog):
 
         async with aiohttp.ClientSession() as session:
             while True:
-                variables = {"sponsorable": sponsorable, "after": cursor}
+                variables = {"owner": REPO_OWNER, "repo": REPO_NAME, "after": cursor}
                 async with session.post(
                     "https://api.github.com/graphql",
                     headers=headers,
                     json={"query": query, "variables": variables},
                 ) as resp:
+                    payload = await resp.json()
+                    logger.debug("GraphQL payload for sponsorships: %r", payload)
                     if resp.status != 200:
                         return "none"
-                    data = await resp.json()
-                    user = data.get("data", {}).get("user")
-                    if not user:
+
+                    repo = payload.get("data", {}).get("repository")
+                    if not repo or "owner" not in repo:
                         return "none"
-                    page = user["sponsorshipsAsMaintainer"]
-                    for node in page["nodes"]:
+
+                    owner = repo["owner"]
+                    # if owner isn’t Sponsorable we get no nodes
+                    nodes = owner.get("sponsorshipsAsMaintainer", {}).get("nodes", [])
+                    for node in nodes:
                         sponsor = node.get("sponsor") or {}
                         if (
                             sponsor.get("id") == github_id
                             or sponsor.get("login") == github_username
                         ):
                             return "active" if node.get("isActive") else "inactive"
-                    if not page["pageInfo"]["hasNextPage"]:
+
+                    page_info = owner.get("sponsorshipsAsMaintainer", {}).get(
+                        "pageInfo", {}
+                    )
+                    if not page_info.get("hasNextPage"):
                         break
-                    cursor = page["pageInfo"]["endCursor"]
+                    cursor = page_info.get("endCursor")
 
         return "none"
 
