@@ -7,7 +7,6 @@ import os
 import asyncio
 import logging
 from urllib.parse import urlencode
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +15,6 @@ load_dotenv()
 WORKER_URL = "https://brog.io"
 ROLE_NAME = "Contributor"
 STAR_ROLE_NAME = "Stargazer"
-SPONSOR_ROLE_NAME = "Sponsor"
-INACTIVE_SPONSOR_ROLE_NAME = "Inactive Sponsor"
 REPO_OWNER = "ente-io"
 REPO_NAME = "ente"
 API_KEY = os.getenv("LOOKUP_API_KEY")
@@ -48,12 +45,12 @@ class GithubRolesCog(commands.Cog):
 
     @tasks.loop(hours=168)
     async def weekly_verification(self):
-        """Weekly task to verify all GitHub roles, remove or adjust invalid ones"""
+        """Weekly task to verify all GitHub roles, remove invalid ones"""
         try:
-            logger.info("Starting weekly GitHub role verification,")
+            logger.info("Starting weekly GitHub role verification")
             for guild in self.bot.guilds:
                 await self.verify_guild_roles(guild)
-            logger.info("Weekly GitHub role verification completed,")
+            logger.info("Weekly GitHub role verification completed")
         except Exception as e:
             logger.error(f"Error during weekly verification: {e}")
 
@@ -75,42 +72,26 @@ class GithubRolesCog(commands.Cog):
             return
 
         stargazer_role = discord.utils.get(guild.roles, name=STAR_ROLE_NAME)
-        sponsor_role = discord.utils.get(guild.roles, name=SPONSOR_ROLE_NAME)
-        inactive_role = discord.utils.get(guild.roles, name=INACTIVE_SPONSOR_ROLE_NAME)
 
-        roles_to_check = []
-        if stargazer_role:
-            roles_to_check.append(("stargazer", stargazer_role))
-        if sponsor_role:
-            roles_to_check.append(("sponsor", sponsor_role))
-        if inactive_role:
-            roles_to_check.append(("inactive_sponsor", inactive_role))
+        if not stargazer_role:
+            return
 
-        for role_type, role in roles_to_check:
-            for member in list(role.members):
-                try:
-                    data = await self.get_github_data(str(member.id))
-                    if not data:
-                        continue
-                    still_ok = await self.verify_role_qualification(data, role_type)
-                    if not still_ok:
-                        await member.remove_roles(
-                            role,
-                            reason=f"Weekly check, no longer qualifies for {role_type}",
-                        )
-                        if role_type == "sponsor" and inactive_role:
-                            await member.add_roles(
-                                inactive_role, reason="Demoted to inactive sponsor"
-                            )
-                        if role_type == "inactive_sponsor" and sponsor_role:
-                            await member.add_roles(
-                                sponsor_role, reason="Promoted back to active sponsor"
-                            )
-                        await asyncio.sleep(1)
-                except Exception as e:
-                    logger.error(f"Error verifying {member.display_name}: {e}")
+        for member in list(stargazer_role.members):
+            try:
+                data = await self.get_github_data(str(member.id))
+                if not data:
                     continue
-        logger.info(f"Guild {guild.name}: verification pass complete,")
+                still_ok = await self.verify_role_qualification(data, "stargazer")
+                if not still_ok:
+                    await member.remove_roles(
+                        stargazer_role,
+                        reason="Weekly check, no longer qualifies for stargazer",
+                    )
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error verifying {member.display_name}: {e}")
+                continue
+        logger.info(f"Guild {guild.name}: verification pass complete")
 
     async def get_github_data(self, discord_id: str):
         try:
@@ -125,117 +106,11 @@ class GithubRolesCog(commands.Cog):
         except Exception:
             return None
 
-
-async def get_sponsorship_status(
-    self, github_id: str, sponsorable: str, github_username: str
-) -> str:
-    """
-    Return 'active' if user is currently sponsoring OR made a one-time payment within 30 days,
-    'inactive' if they have sponsored in the past but not currently,
-    or 'none' if they've never sponsored.
-    Match on both Relay ID and login.
-    """
-    if not GITHUB_TOKEN:
-        return "none"
-
-    query = """
-    query($sponsorable: String!, $after: String) {
-      user(login: $sponsorable) {
-        sponsorshipsAsMaintainer(first: 100, after: $after) {
-          pageInfo { hasNextPage, endCursor }
-          nodes {
-            sponsor { id, login }
-            sponsorEntity { ... on User { id, login } }
-            isActive
-            isOneTimePayment
-            createdAt
-          }
-        }
-      }
-    }
-    """
-
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    cursor = None
-
-    async with aiohttp.ClientSession() as session:
-        while True:
-            variables = {"sponsorable": sponsorable, "after": cursor}
-            async with session.post(
-                "https://api.github.com/graphql",
-                headers=headers,
-                json={"query": query, "variables": variables},
-            ) as resp:
-                if resp.status != 200:
-                    return "none"
-                data = await resp.json()
-                user = data.get("data", {}).get("user")
-                if not user:
-                    return "none"
-                page = user["sponsorshipsAsMaintainer"]
-
-                for node in page["nodes"]:
-                    # Try both deprecated and new sponsor fields
-                    sponsor = node.get("sponsor") or node.get("sponsorEntity") or {}
-
-                    if (
-                        sponsor.get("id") == github_id
-                        or sponsor.get("login") == github_username
-                    ):
-                        is_active = node.get("isActive", False)
-                        is_one_time = node.get("isOneTimePayment", False)
-
-                        # One-time payments are only "active" for 30 days
-                        if is_one_time:
-                            created_at = node.get("createdAt")
-                            if created_at:
-                                try:
-                                    # Parse GitHub's ISO 8601 datetime
-                                    payment_date = datetime.fromisoformat(
-                                        created_at.replace("Z", "+00:00")
-                                    )
-                                    now = datetime.now(timezone.utc)
-                                    days_since_payment = (now - payment_date).days
-
-                                    if days_since_payment <= 30:
-                                        return "active"
-                                    else:
-                                        return "inactive"  # One-time payment older than 30 days
-                                except (ValueError, TypeError):
-                                    # If date parsing fails, treat as inactive
-                                    return "inactive"
-                            else:
-                                # No creation date available, treat as inactive
-                                return "inactive"
-
-                        # For recurring sponsorships, use the isActive field
-                        return "active" if is_active else "inactive"
-
-                if not page["pageInfo"]["hasNextPage"]:
-                    break
-                cursor = page["pageInfo"]["endCursor"]
-
-    return "none"
-
     async def verify_role_qualification(self, github_data, role_type: str) -> bool:
-        github_id = github_data.get("github_id")
         github_username = github_data.get("github_username")
-        if not github_id or not github_username:
+        if not github_username:
             return False
 
-        if role_type == "sponsor":
-            status = await self.get_sponsorship_status(
-                github_id, REPO_OWNER, github_username
-            )
-            return status == "active"
-        if role_type == "inactive_sponsor":
-            status = await self.get_sponsorship_status(
-                github_id, REPO_OWNER, github_username
-            )
-            return status == "inactive"
         if role_type == "stargazer":
             return await self.check_stargazer_status(github_username)
         return False
@@ -257,9 +132,7 @@ async def get_sponsorship_status(
         except Exception:
             return True
 
-    role = app_commands.Group(
-        name="role", description="Get GitHub-related roles,"
-    )  # note comma
+    role = app_commands.Group(name="role", description="Get GitHub-related roles")
 
     @app_commands.command(
         name="linkgithub", description="Link your GitHub account to your Discord."
@@ -277,7 +150,7 @@ async def get_sponsorship_status(
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        f"Failed to generate a secure link.\nStatus: {resp.status}\nText: {await resp.text()}",
+                        f"Failed to generate a secure link. Status: {resp.status} Text: {await resp.text()}",
                         ephemeral=True,
                     )
                     return
@@ -293,110 +166,10 @@ async def get_sponsorship_status(
         view = LinkGithubButton(oauth_url)
 
         await interaction.followup.send(
-            "Click below to link your GitHub account, then use `/role contributor`, `/role stargazer`, or `/role sponsor`,",
+            "Click below to link your GitHub account then use `/role contributor` or `/role stargazer`",
             view=view,
             ephemeral=True,
         )
-
-    @role.command(
-        name="sponsor",
-        description="Assign the Sponsor or Inactive Sponsor role based on your GitHub sponsorship.",
-    )
-    async def sponsor(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        discord_id = str(interaction.user.id)
-
-        if not GITHUB_TOKEN:
-            await interaction.followup.send(
-                "Sponsor checking is not configured, contact an administrator.",
-                ephemeral=True,
-            )
-            return
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
-                headers={"x-api-key": API_KEY},
-            ) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send(
-                        f"Lookup failed: {resp.status} {await resp.text()}",
-                        ephemeral=True,
-                    )
-                    return
-                data = await resp.json()
-
-        github_id = data.get("github_id")
-        github_username = data.get("github_username")
-        if not github_id:
-            await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`,",
-                ephemeral=True,
-            )
-            return
-
-        status = await self.get_sponsorship_status(
-            github_id, REPO_OWNER, github_username
-        )
-        sponsor_role = discord.utils.get(
-            interaction.guild.roles, name=SPONSOR_ROLE_NAME
-        )
-        inactive_sponsor = discord.utils.get(
-            interaction.guild.roles, name=INACTIVE_SPONSOR_ROLE_NAME
-        )
-
-        if status == "active":
-            if not sponsor_role:
-                await interaction.followup.send(
-                    f"The role `{SPONSOR_ROLE_NAME}` does not exist.", ephemeral=True
-                )
-                return
-            try:
-                await interaction.user.add_roles(
-                    sponsor_role, reason="Active GitHub sponsor"
-                )
-                if inactive_sponsor and inactive_sponsor in interaction.user.roles:
-                    await interaction.user.remove_roles(
-                        inactive_sponsor, reason="Now active sponsor"
-                    )
-                await interaction.followup.send(
-                    f"{interaction.user.mention}, you have the `{SPONSOR_ROLE_NAME}` role — thank you!",
-                    ephemeral=True,
-                )
-            except discord.Forbidden:
-                await interaction.followup.send(
-                    "I lack permission to assign roles.", ephemeral=True
-                )
-
-        elif status == "inactive":
-            if not inactive_sponsor:
-                await interaction.followup.send(
-                    f"You're not currently active sponsor and `{INACTIVE_SPONSOR_ROLE_NAME}` doesn't exist.",
-                    ephemeral=True,
-                )
-                return
-            try:
-                await interaction.user.add_roles(
-                    inactive_sponsor, reason="Inactive sponsor (honor system)"
-                )
-                if sponsor_role and sponsor_role in interaction.user.roles:
-                    await interaction.user.remove_roles(
-                        sponsor_role, reason="No longer active sponsor"
-                    )
-                await interaction.followup.send(
-                    f"{interaction.user.mention}, you have the `{INACTIVE_SPONSOR_ROLE_NAME}` role, visit https://github.com/sponsors/{REPO_OWNER} to renew!",
-                    ephemeral=True,
-                )
-            except discord.Forbidden:
-                await interaction.followup.send(
-                    "I lack permission to assign roles.", ephemeral=True
-                )
-
-        else:
-            await interaction.followup.send(
-                f"{interaction.user.mention}, you've never sponsored `{REPO_OWNER}` ({github_username}), visit https://github.com/sponsors/{REPO_OWNER}!",
-                ephemeral=True,
-            )
 
     @role.command(
         name="contributor", description="Get the Contributor role for ente-io/ente."
@@ -419,10 +192,9 @@ async def get_sponsorship_status(
                 data = await resp.json()
 
         github_id = data.get("github_id")
-        github_username = data.get("github_username")
         if not github_id:
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`,",
+                "You haven't linked your GitHub account, use `/linkgithub`",
                 ephemeral=True,
             )
             return
@@ -478,7 +250,7 @@ async def get_sponsorship_status(
             role = discord.utils.get(interaction.guild.roles, name=ROLE_NAME)
             if not role:
                 await interaction.followup.send(
-                    f"The role `{ROLE_NAME}` does not exist.", ephemeral=True
+                    f"The role `{ROLE_NAME}` does not exist", ephemeral=True
                 )
                 return
             try:
@@ -489,11 +261,11 @@ async def get_sponsorship_status(
                 )
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I lack permission to assign roles.", ephemeral=True
+                    "I lack permission to assign roles", ephemeral=True
                 )
         else:
             await interaction.followup.send(
-                f"{interaction.user.mention}, you're not a contributor to `{REPO_OWNER}/{REPO_NAME}` ({github_username}),",
+                f"{interaction.user.mention}, you're not a contributor to `{REPO_OWNER}/{REPO_NAME}`",
                 ephemeral=True,
             )
 
@@ -521,7 +293,7 @@ async def get_sponsorship_status(
         github_username = data.get("github_username")
         if not github_username:
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`,",
+                "You haven't linked your GitHub account, use `/linkgithub`",
                 ephemeral=True,
             )
             return
@@ -550,7 +322,7 @@ async def get_sponsorship_status(
             role = discord.utils.get(interaction.guild.roles, name=STAR_ROLE_NAME)
             if not role:
                 await interaction.followup.send(
-                    f"The role `{STAR_ROLE_NAME}` does not exist.", ephemeral=True
+                    f"The role `{STAR_ROLE_NAME}` does not exist", ephemeral=True
                 )
                 return
             try:
@@ -561,11 +333,11 @@ async def get_sponsorship_status(
                 )
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I lack permission to assign roles.", ephemeral=True
+                    "I lack permission to assign roles", ephemeral=True
                 )
         else:
             await interaction.followup.send(
-                f"{interaction.user.mention}, you haven't starred `{REPO_OWNER}/{REPO_NAME}` ({github_username}),",
+                f"{interaction.user.mention}, you haven't starred `{REPO_OWNER}/{REPO_NAME}`",
                 ephemeral=True,
             )
 
