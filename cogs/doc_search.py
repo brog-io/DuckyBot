@@ -35,6 +35,8 @@ class DocSearch(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+        self.SELFHOSTING_CHANNEL_ID = 1383504546361380995
+
         self.CHANNEL_AUTO_REPLIES = {
             1051153671985045514: {
                 "trigger_keywords": [
@@ -65,6 +67,18 @@ class DocSearch(commands.Cog):
             }
         }
 
+        self.SELFHOSTING_KEYWORDS = [
+            "selfhost",
+            "self-host",
+            "self hosting",
+            "self-hosting",
+            "host myself",
+            "docker",
+        ]
+        self.SELFHOSTING_MESSAGE = (
+            "If you have a question about selfhosting Ente, please use <#{}> so our team can best assist you!"
+        ).format(self.SELFHOSTING_CHANNEL_ID)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -73,12 +87,22 @@ class DocSearch(commands.Cog):
         content = message.content.lower()
         channel_id = message.channel.id
 
+        # Channel-specific auto replies
         if channel_id in self.CHANNEL_AUTO_REPLIES:
             config = self.CHANNEL_AUTO_REPLIES[channel_id]
             if any(k in content for k in config["trigger_keywords"]) and any(
                 p in content for p in config["problem_keywords"]
             ):
                 await message.reply(config["response"], mention_author=False)
+                return
+
+        # Selfhosting: redirect if NOT in the selfhosting channel
+        if (
+            any(word in content for word in self.SELFHOSTING_KEYWORDS)
+            and channel_id != self.SELFHOSTING_CHANNEL_ID
+        ):
+            await message.reply(self.SELFHOSTING_MESSAGE, mention_author=False)
+            return
 
     @app_commands.command(
         name="docsearch", description="Search Ente's documentation for a query."

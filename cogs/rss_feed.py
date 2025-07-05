@@ -8,6 +8,7 @@ from dateutil import parser as dateparser
 import aiohttp
 import logging
 from html import unescape
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,9 @@ MASTODON_FEED = {
 ENTE_ICON_URL = "https://cdn.fosstodon.org/accounts/avatars/112/972/617/472/440/727/original/1bf22f4a9a82e4fc.png"
 STATE_FILE = "ente_rss_state.json"
 
+# SAFETY LIMITS
+MAX_AGE_HOURS = 24  # Don't post items older than 24 hours
+
 
 def get_first_str(val):
     if isinstance(val, list) and val:
@@ -41,23 +45,52 @@ def get_first_str(val):
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    state = {}
+            state = json.load(f)
+            # Add timestamp tracking if not present
+            if "last_check" not in state:
+                state["last_check"] = datetime.now().isoformat()
+            return state
+
+    # Initialize state with current entries
+    state = {"last_check": datetime.now().isoformat()}
     for feed_cfg in [BLOG_FEED, MASTODON_FEED]:
-        d = feedparser.parse(feed_cfg["url"])
-        if d.entries:
-            entry = d.entries[0]
-            entry_id = getattr(entry, "id", entry.link)
-            state[feed_cfg["url"]] = entry_id
-        else:
+        try:
+            d = feedparser.parse(feed_cfg["url"])
+            if d.entries:
+                entry = d.entries[0]
+                entry_id = getattr(entry, "id", entry.link)
+                state[feed_cfg["url"]] = entry_id
+            else:
+                state[feed_cfg["url"]] = None
+        except Exception as e:
+            logger.error(f"Error initializing state for {feed_cfg['url']}: {e}")
             state[feed_cfg["url"]] = None
+
     save_state(state)
     return state
 
 
 def save_state(state):
+    state["last_check"] = datetime.now().isoformat()
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+        json.dump(state, f, indent=2)
+
+
+def is_entry_too_old(entry, max_hours=MAX_AGE_HOURS):
+    """Check if entry is older than max_hours"""
+    published = entry.get("published")
+    if not published:
+        return False
+
+    try:
+        entry_time = dateparser.parse(published)
+        if entry_time:
+            cutoff = datetime.now(entry_time.tzinfo) - timedelta(hours=max_hours)
+            return entry_time < cutoff
+    except Exception:
+        pass
+
+    return False
 
 
 class LinkButton(discord.ui.View):
@@ -187,23 +220,65 @@ class RSSFeedCog(commands.Cog):
             if d.entries:
                 latest = d.entries[0]
                 entry_id = getattr(latest, "id", latest.link)
-                if self.state.get(BLOG_FEED["url"]) != entry_id:
+                stored_id = self.state.get(BLOG_FEED["url"])
+
+                if stored_id != entry_id:
                     new_entries = []
-                    for entry in d.entries:
+                    found_stored = False
+
+                    # IMPROVED: Add safety checks
+                    for i, entry in enumerate(d.entries):
+
                         eid = getattr(entry, "id", entry.link)
-                        if eid == self.state.get(BLOG_FEED["url"]):
+
+                        # If we find the stored entry, stop here
+                        if eid == stored_id:
+                            found_stored = True
                             break
+
+                        # Safety: Don't post old entries
+                        if is_entry_too_old(entry):
+                            logger.info(
+                                f"Skipping old blog entry: {entry.get('title', 'Unknown')}"
+                            )
+                            continue
+
                         new_entries.append(entry)
-                    forum_channel = self.bot.get_channel(BLOG_FEED["forum_channel_id"])
-                    for entry in reversed(new_entries):
-                        await self.send_blog_post(
-                            forum_channel,
-                            entry,
-                            BLOG_FEED["role_mention"],
-                            BLOG_FEED["button_text"],
+
+                        # Safety: If we've gone through too many entries without finding stored ID, stop
+                        if i >= 20:  # Arbitrary limit
+                            logger.warning(
+                                f"Stopped searching after 20 entries, stored ID not found"
+                            )
+                            break
+
+                    if new_entries:
+                        forum_channel = self.bot.get_channel(
+                            BLOG_FEED["forum_channel_id"]
                         )
-                    self.state[BLOG_FEED["url"]] = entry_id
-                    changed = True
+                        if forum_channel:
+                            logger.info(f"Posting {len(new_entries)} new blog entries")
+                            for entry in reversed(new_entries):
+                                await self.send_blog_post(
+                                    forum_channel,
+                                    entry,
+                                    BLOG_FEED["role_mention"],
+                                    BLOG_FEED["button_text"],
+                                )
+                        else:
+                            logger.error(
+                                f"Blog forum channel not found: {BLOG_FEED['forum_channel_id']}"
+                            )
+
+                        # Only update state if we found the stored ID or it's the first run
+                        if found_stored or stored_id is None:
+                            self.state[BLOG_FEED["url"]] = entry_id
+                            changed = True
+                        else:
+                            logger.warning(
+                                "Stored blog entry ID not found in feed, not updating state"
+                            )
+
         except Exception as e:
             logger.error(f"RSS error for blog: {e}")
 
@@ -214,24 +289,62 @@ class RSSFeedCog(commands.Cog):
             if d.entries:
                 latest = d.entries[0]
                 entry_id = getattr(latest, "id", latest.link)
-                if self.state.get(MASTODON_FEED["url"]) != entry_id:
+                stored_id = self.state.get(MASTODON_FEED["url"])
+
+                if stored_id != entry_id:
                     new_entries = []
-                    for entry in d.entries:
+                    found_stored = False
+
+                    # IMPROVED: Same safety checks for Mastodon
+                    for i, entry in enumerate(d.entries):
+
                         eid = getattr(entry, "id", entry.link)
-                        if eid == self.state.get(MASTODON_FEED["url"]):
+
+                        if eid == stored_id:
+                            found_stored = True
                             break
+
+                        if is_entry_too_old(entry):
+                            logger.info(
+                                f"Skipping old Mastodon entry: {entry.get('title', 'Unknown')}"
+                            )
+                            continue
+
                         new_entries.append(entry)
-                    channel = self.bot.get_channel(MASTODON_FEED["text_channel_id"])
-                    for entry in reversed(new_entries):
-                        await self.send_mastodon_embed(
-                            channel,
-                            entry,
-                            MASTODON_FEED["role_mention"],
-                            MASTODON_FEED["button_text"],
-                            author_icon,
-                        )
-                    self.state[MASTODON_FEED["url"]] = entry_id
-                    changed = True
+
+                        if i >= 20:
+                            logger.warning(
+                                f"Stopped searching after 20 entries, stored ID not found"
+                            )
+                            break
+
+                    if new_entries:
+                        channel = self.bot.get_channel(MASTODON_FEED["text_channel_id"])
+                        if channel:
+                            logger.info(
+                                f"Posting {len(new_entries)} new Mastodon entries"
+                            )
+                            for entry in reversed(new_entries):
+                                await self.send_mastodon_embed(
+                                    channel,
+                                    entry,
+                                    MASTODON_FEED["role_mention"],
+                                    MASTODON_FEED["button_text"],
+                                    author_icon,
+                                )
+                        else:
+                            logger.error(
+                                f"Mastodon channel not found: {MASTODON_FEED['text_channel_id']}"
+                            )
+
+                        if found_stored or stored_id is None:
+                            self.state[MASTODON_FEED["url"]] = entry_id
+                            changed = True
+                        else:
+                            logger.warning(
+                                "Stored Mastodon entry ID not found in feed, not updating state"
+                            )
+
         except Exception as e:
             logger.error(f"RSS error for Mastodon: {e}")
 
@@ -251,9 +364,13 @@ class RSSFeedCog(commands.Cog):
         url = entry.link
         if forum_channel and isinstance(forum_channel, discord.ForumChannel):
             content = f"📰 [**{title}**]({url}) **|** {role_mention}"
-            thread = await forum_channel.create_thread(
-                name=title[:95], content=content, view=LinkButton(url, button_text)
-            )
+            try:
+                thread = await forum_channel.create_thread(
+                    name=title[:95], content=content, view=LinkButton(url, button_text)
+                )
+                logger.info(f"Posted blog: {title}")
+            except Exception as e:
+                logger.error(f"Failed to post blog thread: {e}")
 
     async def send_mastodon_embed(
         self,
@@ -284,9 +401,13 @@ class RSSFeedCog(commands.Cog):
         if timestamp:
             embed.timestamp = timestamp
 
-        await channel.send(
-            content=role_mention, embed=embed, view=LinkButton(link, button_text)
-        )
+        try:
+            await channel.send(
+                content=role_mention, embed=embed, view=LinkButton(link, button_text)
+            )
+            logger.info(f"Posted Mastodon: {author}")
+        except Exception as e:
+            logger.error(f"Failed to post Mastodon embed: {e}")
 
 
 async def setup(bot: commands.Bot):
