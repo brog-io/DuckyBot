@@ -16,7 +16,7 @@ EXAMPLE_QUERIES = [
     "How do I pronounce Ente?",
     "Is there a student discount?",
     "How to reset my password if I lost it?",
-    "Can I search for photos using the descriptions I’ve added? ",
+    "Can I search for photos using the descriptions I've added? ",
     "Does Ente Auth require an account? ",
 ]
 
@@ -36,6 +36,13 @@ class DocSearch(commands.Cog):
         self.bot = bot
 
         self.SELFHOSTING_CHANNEL_ID = 1383504546361380995
+        self.INTROS_CHANNEL_ID = 1380262760994177135
+
+        # Channels where selfhosting redirect should NOT appear
+        self.SELFHOSTING_EXEMPT_CHANNELS = [
+            self.SELFHOSTING_CHANNEL_ID,
+            self.INTROS_CHANNEL_ID,
+        ]
 
         self.CHANNEL_AUTO_REPLIES = {
             1051153671985045514: {
@@ -79,6 +86,21 @@ class DocSearch(commands.Cog):
             "If you have a question about selfhosting Ente, please use <#{}> so our team can best assist you!"
         ).format(self.SELFHOSTING_CHANNEL_ID)
 
+    def is_in_exempt_channel(self, message: discord.Message) -> bool:
+        """Check if message is in a channel where selfhosting redirects should not appear."""
+        channel_id = message.channel.id
+
+        # Direct message in any exempt channel
+        if channel_id in self.SELFHOSTING_EXEMPT_CHANNELS:
+            return True
+
+        # Message in a thread within an exempt forum channel
+        if isinstance(message.channel, discord.Thread):
+            if message.channel.parent_id in self.SELFHOSTING_EXEMPT_CHANNELS:
+                return True
+
+        return False
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -96,11 +118,10 @@ class DocSearch(commands.Cog):
                 await message.reply(config["response"], mention_author=False)
                 return
 
-        # Selfhosting: redirect if NOT in the selfhosting channel
-        if (
-            any(word in content for word in self.SELFHOSTING_KEYWORDS)
-            and channel_id != self.SELFHOSTING_CHANNEL_ID
-        ):
+        # Selfhosting: redirect if NOT in exempt channels (selfhosting, intros, etc.)
+        if any(
+            word in content for word in self.SELFHOSTING_KEYWORDS
+        ) and not self.is_in_exempt_channel(message):
             await message.reply(self.SELFHOSTING_MESSAGE, mention_author=False)
             return
 
