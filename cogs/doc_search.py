@@ -83,7 +83,7 @@ class DocSearch(commands.Cog):
             "docker",
         ]
         self.SELFHOSTING_MESSAGE = (
-            "If you have a question about selfhosting Ente, please use <#{}> so our team can best assist you!"
+            "If you have a question about selfhosting Ente, please check out <#{}>"
         ).format(self.SELFHOSTING_CHANNEL_ID)
 
     def is_in_exempt_channel(self, message: discord.Message) -> bool:
