@@ -158,7 +158,7 @@ class ServerManager(commands.Cog):
                     "- 🐣 **ENTE**\n"
                     "  - **<#948937919027105865>**: Discussions and support related to Ente Photos.\n"
                     "  - **<#1051153671985045514>**: Focused on Ente Auth and authentication-related queries.\n"
-                    "  - **<#1215252276911018014>**: Discussions for those interested in hosting Ente services themselves.\n"
+                    "  - **<#1383504546361380995>**: Discussions for those interested in hosting Ente services themselves.\n"
                     "  - **<#1121126215995113552>**: Share suggestions, report bugs, or provide input on Ente products and community.\n"
                     "  - **<#1364139133794123807>**: Ask for help, Ducky will try to help you out!.\n\n"
                     "- 💬 **COMMUNITY**\n"
