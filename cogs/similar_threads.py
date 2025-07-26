@@ -14,9 +14,7 @@ class ForumSimilarityBot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.forum_channel_id = (
-            YOUR_FORUM_CHANNEL_ID  # Replace with your forum channel ID
-        )
+        self.forum_channel_id = 1383504546361380995
         self.similarity_threshold = 0.78
         self.solved_posts_file = "solved_posts_index.json"
         self.solved_tag_name = "Solved"
