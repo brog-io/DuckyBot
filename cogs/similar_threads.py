@@ -22,14 +22,16 @@ class ForumSimilarityBot(commands.Cog):
         self.solved_posts_file = "solved_posts_index.json"
         self.solved_tag_name = "Solved"
 
+        # ADD: Thread-safe operations
+        self._file_lock = asyncio.Lock()
+        self._processing_threads = set()  # Track threads being processed
+
         # Optimization settings
-        self.embedding_model = (
-            "text-embedding-3-small"  # 1536 dimensions instead of 3072
-        )
-        self.embedding_version = "v1"  # For versioning embeddings
-        self.batch_size = 100  # Batch embedding requests
+        self.embedding_model = "text-embedding-3-small"
+        self.embedding_version = "v1"
+        self.batch_size = 100
         self.max_retries = 3
-        self.cache_duration_days = 60  # Refresh old embeddings
+        self.cache_duration_days = 60
 
         # Performance tracking
         self.stats = {
@@ -40,7 +42,7 @@ class ForumSimilarityBot(commands.Cog):
         }
 
         # Initialize cache before loading data
-        self.embedding_cache = {}  # In-memory cache for frequently accessed embeddings
+        self.embedding_cache = {}
 
         # Load existing data
         self.solved_posts = self.load_solved_posts()
@@ -53,7 +55,7 @@ class ForumSimilarityBot(commands.Cog):
         try:
             with open(self.solved_posts_file, "r") as f:
                 content = f.read().strip()
-                if not content:  # Empty file
+                if not content:
                     return {}
                 data = json.loads(content)
                 # Load embeddings into memory for faster access
@@ -75,21 +77,42 @@ class ForumSimilarityBot(commands.Cog):
             ):
                 self.embedding_cache[post_id] = np.array(post_data["embedding"])
 
-    def save_solved_posts(self):
-        # Convert numpy arrays back to lists for JSON serialization
-        serializable_data = {}
-        for post_id, post_data in self.solved_posts.items():
-            serializable_data[post_id] = post_data.copy()
-            if "embedding" in serializable_data[post_id] and isinstance(
-                serializable_data[post_id]["embedding"], np.ndarray
-            ):
-                serializable_data[post_id]["embedding"] = serializable_data[post_id][
-                    "embedding"
-                ].tolist()
+    async def save_solved_posts(self):
+        """Thread-safe save with duplicate prevention"""
+        async with self._file_lock:
+            # ADDED: Remove any potential duplicates before saving
+            self._remove_duplicates()
 
-        # Use compact JSON for embeddings (no pretty printing)
-        with open(self.solved_posts_file, "w") as f:
-            json.dump(serializable_data, f, separators=(",", ":"))
+            # Convert numpy arrays back to lists for JSON serialization
+            serializable_data = {}
+            for post_id, post_data in self.solved_posts.items():
+                serializable_data[post_id] = post_data.copy()
+                if "embedding" in serializable_data[post_id] and isinstance(
+                    serializable_data[post_id]["embedding"], np.ndarray
+                ):
+                    serializable_data[post_id]["embedding"] = serializable_data[
+                        post_id
+                    ]["embedding"].tolist()
+
+            # Use compact JSON for embeddings (no pretty printing)
+            with open(self.solved_posts_file, "w") as f:
+                json.dump(serializable_data, f, separators=(",", ":"))
+
+    def _remove_duplicates(self):
+        """Remove duplicate entries based on thread ID"""
+        # Convert all keys to strings to ensure consistency
+        cleaned_posts = {}
+        seen_ids = set()
+
+        for post_id, post_data in self.solved_posts.items():
+            str_id = str(post_id)
+            if str_id not in seen_ids:
+                cleaned_posts[str_id] = post_data
+                seen_ids.add(str_id)
+            else:
+                logger.warning(f"Removed duplicate entry for thread {str_id}")
+
+        self.solved_posts = cleaned_posts
 
     async def generate_embeddings_batch(
         self, texts: List[str]
@@ -153,46 +176,69 @@ class ForumSimilarityBot(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def check_new_solved_posts(self):
-        """Check for newly solved posts with batch processing"""
+        """Check for newly solved posts with batch processing and deduplication"""
         await self.bot.wait_until_ready()
 
         forum_channel = self.bot.get_channel(self.forum_channel_id)
         if not forum_channel:
             return
 
+        # CHANGED: Use set to prevent duplicates, then convert to list
+        new_thread_ids = set()
         new_threads = []
 
         try:
-            # Collect new solved threads
+            # Collect new solved threads from active threads
             for thread in forum_channel.threads:
+                thread_id = str(thread.id)
                 if (
                     self.is_thread_solved(thread)
-                    and str(thread.id) not in self.solved_posts
+                    and thread_id not in self.solved_posts
+                    and thread_id
+                    not in self._processing_threads  # ADDED: Check if already being processed
                 ):
-                    new_threads.append(thread)
+                    if thread_id not in new_thread_ids:  # ADDED: Deduplicate
+                        new_thread_ids.add(thread_id)
+                        new_threads.append(thread)
 
             # Check archived threads (limited batch)
             count = 0
-            async for thread in forum_channel.archived_threads(
-                limit=200
-            ):  # Increased from 100
-                if count >= 100:  # Increased from 50
+            async for thread in forum_channel.archived_threads(limit=200):
+                if count >= 100:
                     break
+
+                thread_id = str(thread.id)
                 if (
                     self.is_thread_solved(thread)
-                    and str(thread.id) not in self.solved_posts
+                    and thread_id not in self.solved_posts
+                    and thread_id
+                    not in self._processing_threads  # ADDED: Check if already being processed
                 ):
-                    new_threads.append(thread)
-                    count += 1
+                    if thread_id not in new_thread_ids:  # ADDED: Deduplicate
+                        new_thread_ids.add(thread_id)
+                        new_threads.append(thread)
+                        count += 1
 
             if new_threads:
-                await self.batch_add_threads_to_index(new_threads)
-                logger.info(
-                    f"Added {len(new_threads)} new solved posts. Total: {len(self.solved_posts)}"
-                )
+                # ADDED: Mark threads as being processed
+                for thread in new_threads:
+                    self._processing_threads.add(str(thread.id))
+
+                try:
+                    await self.batch_add_threads_to_index(new_threads)
+                    logger.info(
+                        f"Added {len(new_threads)} new solved posts. Total: {len(self.solved_posts)}"
+                    )
+                finally:
+                    # ADDED: Remove from processing set
+                    for thread in new_threads:
+                        self._processing_threads.discard(str(thread.id))
 
         except Exception as e:
             logger.error(f"Error checking for new solved posts: {e}")
+            # ADDED: Clean up processing set on error
+            for thread in new_threads:
+                self._processing_threads.discard(str(thread.id))
 
     @tasks.loop(hours=24)
     async def refresh_old_embeddings(self):
@@ -221,11 +267,22 @@ class ForumSimilarityBot(commands.Cog):
         if not threads:
             return
 
+        # ADDED: Final check for duplicates before processing
+        unique_threads = []
+        for thread in threads:
+            if str(thread.id) not in self.solved_posts:
+                unique_threads.append(thread)
+            else:
+                logger.info(f"Skipping duplicate thread {thread.id} during batch add")
+
+        if not unique_threads:
+            return
+
         # Collect all texts for batch processing
         texts = []
         thread_data = []
 
-        for thread in threads:
+        for thread in unique_threads:
             try:
                 starter_message = await thread.fetch_message(thread.id)
                 combined_text = f"Title: {thread.name or 'Untitled'}\nBody: {starter_message.content or ''}"
@@ -253,23 +310,28 @@ class ForumSimilarityBot(commands.Cog):
             if i < len(embeddings) and embeddings[i]:
                 thread = data["thread"]
                 starter_message = data["starter_message"]
+                thread_id = str(thread.id)
 
-                # Store in index
-                self.solved_posts[str(thread.id)] = {
-                    "title": thread.name or "Untitled",
-                    "body": starter_message.content or "",
-                    "author_id": starter_message.author.id,
-                    "created_at": thread.created_at.isoformat(),
-                    "indexed_at": datetime.now().isoformat(),
-                    "url": thread.jump_url,
-                    "embedding": embeddings[i],
-                    "embedding_version": self.embedding_version,
-                }
+                # ADDED: Double-check before storing
+                if thread_id not in self.solved_posts:
+                    # Store in index
+                    self.solved_posts[thread_id] = {
+                        "title": thread.name or "Untitled",
+                        "body": starter_message.content or "",
+                        "author_id": starter_message.author.id,
+                        "created_at": thread.created_at.isoformat(),
+                        "indexed_at": datetime.now().isoformat(),
+                        "url": thread.jump_url,
+                        "embedding": embeddings[i],
+                        "embedding_version": self.embedding_version,
+                    }
 
-                # Add to memory cache
-                self.embedding_cache[str(thread.id)] = np.array(embeddings[i])
+                    # Add to memory cache
+                    self.embedding_cache[thread_id] = np.array(embeddings[i])
+                else:
+                    logger.warning(f"Thread {thread_id} already exists, skipping")
 
-        self.save_solved_posts()
+        await self.save_solved_posts()  # CHANGED: Made async
 
     async def batch_update_embeddings(self, old_posts: List[Tuple[str, Dict]]):
         """Update embeddings for old posts in batches"""
@@ -292,7 +354,7 @@ class ForumSimilarityBot(commands.Cog):
                 # Update cache
                 self.embedding_cache[post_id] = np.array(embeddings[i])
 
-        self.save_solved_posts()
+        await self.save_solved_posts()  # CHANGED: Made async
 
     def is_thread_solved(self, thread):
         """Check if a thread has the solved tag"""
@@ -304,7 +366,21 @@ class ForumSimilarityBot(commands.Cog):
 
     async def add_thread_to_index(self, thread):
         """Add single thread to index (fallback for immediate updates)"""
-        await self.batch_add_threads_to_index([thread])
+        thread_id = str(thread.id)
+
+        # ADDED: Check if already processing or exists
+        if thread_id in self._processing_threads or thread_id in self.solved_posts:
+            logger.info(f"Thread {thread_id} already being processed or exists")
+            return
+
+        # ADDED: Mark as processing
+        self._processing_threads.add(thread_id)
+
+        try:
+            await self.batch_add_threads_to_index([thread])
+        finally:
+            # ADDED: Always remove from processing set
+            self._processing_threads.discard(thread_id)
 
     async def find_similar_solved_posts_optimized(
         self, title: str, body: str
@@ -490,7 +566,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
 
     @commands.Cog.listener()
     async def on_thread_update(self, before, after):
-        """Detect solved threads with immediate indexing"""
+        """Detect solved threads with immediate indexing and duplicate prevention"""
         if (
             not isinstance(after.parent, discord.ForumChannel)
             or after.parent.id != self.forum_channel_id
@@ -504,9 +580,17 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
         after_solved = self.is_thread_solved(after)
 
         if not before_solved and after_solved:
-            if str(after.id) not in self.solved_posts:
+            thread_id = str(after.id)
+
+            # ADDED: More thorough duplicate checking
+            if (
+                thread_id not in self.solved_posts
+                and thread_id not in self._processing_threads
+            ):
                 await self.add_thread_to_index(after)
                 logger.info(f"Immediately indexed newly solved post: {after.name}")
+            else:
+                logger.info(f"Thread {thread_id} already indexed or being processed")
 
     async def send_similarity_notification(self, thread, similar_posts):
         """Send optimized notification"""
@@ -550,7 +634,21 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             "cached_embeddings": len(self.embedding_cache),
             "cache_hit_rate": self.stats["cache_hits"]
             / max(1, self.stats["similarity_checks"]),
+            "currently_processing": len(self._processing_threads),  # ADDED
         }
+
+    # ADDED: Utility method to clean existing duplicates
+    async def clean_duplicates(self):
+        """Manually clean duplicates from the index"""
+        original_count = len(self.solved_posts)
+        self._remove_duplicates()
+        await self.save_solved_posts()
+        cleaned_count = len(self.solved_posts)
+
+        if original_count != cleaned_count:
+            logger.info(f"Cleaned {original_count - cleaned_count} duplicate entries")
+            return original_count - cleaned_count
+        return 0
 
 
 async def setup(bot):
