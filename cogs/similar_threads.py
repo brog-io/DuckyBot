@@ -5,9 +5,12 @@ import asyncio
 import openai
 import numpy as np
 import os
+import logging
 from datetime import datetime, timedelta
 import time
 from typing import List, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class ForumSimilarityBot(commands.Cog):
@@ -15,7 +18,7 @@ class ForumSimilarityBot(commands.Cog):
         self.bot = bot
         self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.forum_channel_id = 1383504546361380995
-        self.similarity_threshold = 0.65
+        self.similarity_threshold = 0.55
         self.solved_posts_file = "solved_posts_index.json"
         self.solved_tag_name = "Solved"
 
@@ -26,7 +29,7 @@ class ForumSimilarityBot(commands.Cog):
         self.embedding_version = "v1"  # For versioning embeddings
         self.batch_size = 100  # Batch embedding requests
         self.max_retries = 3
-        self.cache_duration_days = 30  # Refresh old embeddings
+        self.cache_duration_days = 60  # Refresh old embeddings
 
         # Performance tracking
         self.stats = {
@@ -57,8 +60,8 @@ class ForumSimilarityBot(commands.Cog):
                 self.preload_embeddings(data)
                 return data
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"⚠️ Could not load solved posts file: {e}")
-            print("📝 Starting with empty index...")
+            logger.warning(f"Could not load solved posts file: {e}")
+            logger.info("Starting with empty index...")
             return {}
 
     def preload_embeddings(self, posts_data):
@@ -210,7 +213,7 @@ class ForumSimilarityBot(commands.Cog):
                 old_posts.append((post_id, post_data))
 
         if old_posts:
-            print(f"🔄 Refreshing {len(old_posts)} old embeddings...")
+            logger.info(f"Refreshing {len(old_posts)} old embeddings...")
             await self.batch_update_embeddings(old_posts)
 
     async def batch_add_threads_to_index(self, threads: List[discord.Thread]):
@@ -236,7 +239,7 @@ class ForumSimilarityBot(commands.Cog):
                     }
                 )
             except Exception as e:
-                print(f"Error preparing thread {thread.id}: {e}")
+                logger.error(f"Error preparing thread {thread.id}: {e}")
                 continue
 
         if not texts:
@@ -438,7 +441,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             return json.loads(result)
 
         except Exception as e:
-            print(f"Error in AI ranking: {e}")
+            logger.error(f"Error in AI ranking: {e}")
             # Fallback to top embedding matches
             return candidates[:3]
 
@@ -501,7 +504,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
         if not before_solved and after_solved:
             if str(after.id) not in self.solved_posts:
                 await self.add_thread_to_index(after)
-                print(f"✅ Immediately indexed newly solved post: {after.name}")
+                logger.info(f"Immediately indexed newly solved post: {after.name}")
 
     async def send_similarity_notification(self, thread, similar_posts):
         """Send optimized notification"""
@@ -534,6 +537,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             if len(self.solved_posts) > 50:
                 embed.set_footer(text=f"Searched {len(self.solved_posts)} solved posts")
 
+        await asyncio.sleep(60)
         await thread.send(embed=embed)
 
     def get_stats(self) -> Dict:
