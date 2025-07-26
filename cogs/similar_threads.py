@@ -513,7 +513,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
         embed = discord.Embed(
             title="🔍 Similar Solved Posts",
             description="Found some similar posts that might help:",
-            color=0x00FF00,
+            color=0xFFCD3F,
         )
 
         links = []
@@ -539,7 +539,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             if len(self.solved_posts) > 50:
                 embed.set_footer(text=f"Searched {len(self.solved_posts)} solved posts")
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(50)
         await thread.send(embed=embed)
 
     def get_stats(self) -> Dict:
