@@ -34,9 +34,11 @@ class ForumSimilarityBot(commands.Cog):
             "matches_found": 0,
         }
 
+        # Initialize cache before loading data
+        self.embedding_cache = {}  # In-memory cache for frequently accessed embeddings
+
         # Load existing data
         self.solved_posts = self.load_solved_posts()
-        self.embedding_cache = {}  # In-memory cache for frequently accessed embeddings
 
         # Start background tasks
         self.check_new_solved_posts.start()
