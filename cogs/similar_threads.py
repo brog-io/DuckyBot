@@ -15,7 +15,7 @@ class ForumSimilarityBot(commands.Cog):
         self.bot = bot
         self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.forum_channel_id = 1383504546361380995
-        self.similarity_threshold = 0.78
+        self.similarity_threshold = 0.65
         self.solved_posts_file = "solved_posts_index.json"
         self.solved_tag_name = "Solved"
 
@@ -26,7 +26,7 @@ class ForumSimilarityBot(commands.Cog):
         self.embedding_version = "v1"  # For versioning embeddings
         self.batch_size = 100  # Batch embedding requests
         self.max_retries = 3
-        self.cache_duration_days = 60  # Refresh old embeddings
+        self.cache_duration_days = 30  # Refresh old embeddings
 
         # Performance tracking
         self.stats = {
@@ -49,11 +49,16 @@ class ForumSimilarityBot(commands.Cog):
     def load_solved_posts(self):
         try:
             with open(self.solved_posts_file, "r") as f:
-                data = json.load(f)
+                content = f.read().strip()
+                if not content:  # Empty file
+                    return {}
+                data = json.loads(content)
                 # Load embeddings into memory for faster access
                 self.preload_embeddings(data)
                 return data
-        except FileNotFoundError:
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"⚠️ Could not load solved posts file: {e}")
+            print("📝 Starting with empty index...")
             return {}
 
     def preload_embeddings(self, posts_data):
@@ -302,15 +307,22 @@ class ForumSimilarityBot(commands.Cog):
         self, title: str, body: str
     ) -> List[Dict]:
         """Optimized similarity search with smart filtering"""
+        print(
+            f"🔍 Starting similarity search with {len(self.solved_posts)} solved posts"
+        )
+
         if not self.solved_posts:
+            print("❌ No solved posts in index")
             return []
 
         start_time = time.time()
 
         # Generate embedding for new post
         new_text = f"Title: {title}\nBody: {body}"
+        print(f"📝 Generating embedding for: '{title[:50]}...'")
         new_embedding = await self.generate_embedding(new_text)
         if not new_embedding:
+            print("❌ Failed to generate embedding")
             return []
 
         new_embedding_np = np.array(new_embedding)
@@ -329,6 +341,8 @@ class ForumSimilarityBot(commands.Cog):
                 post_ids_batch.append(post_id)
                 post_data_batch.append(post_data)
 
+        print(f"🎯 Comparing against {len(embedding_batch)} posts with embeddings")
+
         # Vectorized similarity calculation
         if embedding_batch:
             embedding_matrix = np.vstack(embedding_batch)
@@ -338,8 +352,10 @@ class ForumSimilarityBot(commands.Cog):
             )
 
             # Filter by threshold and prepare results
+            above_threshold = 0
             for i, similarity in enumerate(similarities_batch):
                 if similarity > self.similarity_threshold:
+                    above_threshold += 1
                     post_data = post_data_batch[i]
                     similarities.append(
                         {
@@ -351,6 +367,10 @@ class ForumSimilarityBot(commands.Cog):
                         }
                     )
 
+            print(
+                f"📊 {above_threshold} posts above threshold {self.similarity_threshold}"
+            )
+
         # Sort by similarity and get top candidates
         similarities.sort(key=lambda x: x["similarity"], reverse=True)
         top_candidates = similarities[:8]
@@ -361,16 +381,16 @@ class ForumSimilarityBot(commands.Cog):
             self.stats["matches_found"] += 1
 
         processing_time = time.time() - start_time
-        if len(self.solved_posts) > 100:  # Only log for larger indexes
-            print(
-                f"⚡ Similarity search: {processing_time:.3f}s for {len(self.solved_posts)} posts"
-            )
+        print(f"⚡ Similarity search: {processing_time:.3f}s")
 
         if not top_candidates:
             return []
 
         # Use AI for final ranking
-        return await self.ai_rank_candidates_optimized(title, body, top_candidates)
+        print("🤖 Running AI ranking...")
+        result = await self.ai_rank_candidates_optimized(title, body, top_candidates)
+        print(f"✅ AI returned {len(result)} final matches")
+        return result
 
     async def ai_rank_candidates_optimized(
         self, title: str, body: str, candidates: List[Dict]
@@ -425,10 +445,13 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
     @commands.Cog.listener()
     async def on_thread_create(self, thread):
         """Handle new forum posts with optimized processing"""
+        print(f"🔍 New thread detected: {thread.name} in channel {thread.parent.id}")
+
         if (
             not isinstance(thread.parent, discord.ForumChannel)
             or thread.parent.id != self.forum_channel_id
         ):
+            print(f"❌ Wrong channel or not forum. Expected: {self.forum_channel_id}")
             return
 
         await asyncio.sleep(2)
@@ -437,15 +460,25 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             starter_message = await thread.fetch_message(thread.id)
 
             if not thread.name and not starter_message.content:
+                print("❌ No title or content to analyze")
                 return
+
+            print(
+                f"📝 Analyzing post: '{thread.name}' with {len(self.solved_posts)} solved posts"
+            )
 
             # Find similar solved posts using optimized search
             similar_posts = await self.find_similar_solved_posts_optimized(
                 thread.name or "Untitled", starter_message.content or ""
             )
 
+            print(f"🎯 Found {len(similar_posts)} similar posts")
+
             if similar_posts:
                 await self.send_similarity_notification(thread, similar_posts)
+                print("✅ Sent similarity notification")
+            else:
+                print("ℹ️ No similar posts found above threshold")
 
         except Exception as e:
             print(f"Error processing new thread: {e}")
