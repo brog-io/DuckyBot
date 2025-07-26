@@ -119,7 +119,7 @@ class ForumSimilarityBot(commands.Cog):
 
                 except Exception as e:
                     if attempt == self.max_retries - 1:
-                        print(
+                        logger.error(
                             f"Failed to generate embeddings after {self.max_retries} attempts: {e}"
                         )
                         all_embeddings.extend([None] * len(batch))
@@ -187,12 +187,12 @@ class ForumSimilarityBot(commands.Cog):
 
             if new_threads:
                 await self.batch_add_threads_to_index(new_threads)
-                print(
-                    f"✅ Added {len(new_threads)} new solved posts. Total: {len(self.solved_posts)}"
+                logger.info(
+                    f"Added {len(new_threads)} new solved posts. Total: {len(self.solved_posts)}"
                 )
 
         except Exception as e:
-            print(f"Error checking for new solved posts: {e}")
+            logger.error(f"Error checking for new solved posts: {e}")
 
     @tasks.loop(hours=24)
     async def refresh_old_embeddings(self):
@@ -310,22 +310,22 @@ class ForumSimilarityBot(commands.Cog):
         self, title: str, body: str
     ) -> List[Dict]:
         """Optimized similarity search with smart filtering"""
-        print(
-            f"🔍 Starting similarity search with {len(self.solved_posts)} solved posts"
+        logger.info(
+            f"Starting similarity search with {len(self.solved_posts)} solved posts"
         )
 
         if not self.solved_posts:
-            print("❌ No solved posts in index")
+            logger.info("No solved posts in index")
             return []
 
         start_time = time.time()
 
         # Generate embedding for new post
         new_text = f"Title: {title}\nBody: {body}"
-        print(f"📝 Generating embedding for: '{title[:50]}...'")
+        logger.info(f"Generating embedding for: '{title[:50]}...'")
         new_embedding = await self.generate_embedding(new_text)
         if not new_embedding:
-            print("❌ Failed to generate embedding")
+            logger.info("Failed to generate embedding")
             return []
 
         new_embedding_np = np.array(new_embedding)
@@ -344,7 +344,7 @@ class ForumSimilarityBot(commands.Cog):
                 post_ids_batch.append(post_id)
                 post_data_batch.append(post_data)
 
-        print(f"🎯 Comparing against {len(embedding_batch)} posts with embeddings")
+        logger.info(f"Comparing against {len(embedding_batch)} posts with embeddings")
 
         # Vectorized similarity calculation
         if embedding_batch:
@@ -370,8 +370,8 @@ class ForumSimilarityBot(commands.Cog):
                         }
                     )
 
-            print(
-                f"📊 {above_threshold} posts above threshold {self.similarity_threshold}"
+            logger.info(
+                f"{above_threshold} posts above threshold {self.similarity_threshold}"
             )
 
         # Sort by similarity and get top candidates
@@ -384,15 +384,15 @@ class ForumSimilarityBot(commands.Cog):
             self.stats["matches_found"] += 1
 
         processing_time = time.time() - start_time
-        print(f"⚡ Similarity search: {processing_time:.3f}s")
+        logger.info(f"Similarity search: {processing_time:.3f}s")
 
         if not top_candidates:
             return []
 
         # Use AI for final ranking
-        print("🤖 Running AI ranking...")
+        logger.info("Running AI ranking...")
         result = await self.ai_rank_candidates_optimized(title, body, top_candidates)
-        print(f"✅ AI returned {len(result)} final matches")
+        logger.info(f"AI returned {len(result)} final matches")
         return result
 
     async def ai_rank_candidates_optimized(
@@ -448,13 +448,15 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
     @commands.Cog.listener()
     async def on_thread_create(self, thread):
         """Handle new forum posts with optimized processing"""
-        print(f"🔍 New thread detected: {thread.name} in channel {thread.parent.id}")
+        logger.info(f"New thread detected: {thread.name} in channel {thread.parent.id}")
 
         if (
             not isinstance(thread.parent, discord.ForumChannel)
             or thread.parent.id != self.forum_channel_id
         ):
-            print(f"❌ Wrong channel or not forum. Expected: {self.forum_channel_id}")
+            logger.error(
+                f"Wrong channel or not forum. Expected: {self.forum_channel_id}"
+            )
             return
 
         await asyncio.sleep(2)
@@ -463,11 +465,11 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             starter_message = await thread.fetch_message(thread.id)
 
             if not thread.name and not starter_message.content:
-                print("❌ No title or content to analyze")
+                logger.error("No title or content to analyze")
                 return
 
-            print(
-                f"📝 Analyzing post: '{thread.name}' with {len(self.solved_posts)} solved posts"
+            logger.info(
+                f"Analyzing post: '{thread.name}' with {len(self.solved_posts)} solved posts"
             )
 
             # Find similar solved posts using optimized search
@@ -475,16 +477,16 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
                 thread.name or "Untitled", starter_message.content or ""
             )
 
-            print(f"🎯 Found {len(similar_posts)} similar posts")
+            logger.info(f"Found {len(similar_posts)} similar posts")
 
             if similar_posts:
                 await self.send_similarity_notification(thread, similar_posts)
-                print("✅ Sent similarity notification")
+                logger.info("Sent similarity notification")
             else:
-                print("ℹ️ No similar posts found above threshold")
+                logger.info("ℹNo similar posts found above threshold")
 
         except Exception as e:
-            print(f"Error processing new thread: {e}")
+            logger.error(f"Error processing new thread: {e}")
 
     @commands.Cog.listener()
     async def on_thread_update(self, before, after):
