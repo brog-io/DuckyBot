@@ -14,17 +14,19 @@ class ForumSimilarityBot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.forum_channel_id = 1383504546361380995
+        self.forum_channel_id = (
+            YOUR_FORUM_CHANNEL_ID  # Replace with your forum channel ID
+        )
         self.similarity_threshold = 0.78
         self.solved_posts_file = "solved_posts_index.json"
         self.solved_tag_name = "Solved"
 
         # Optimization settings
-        self.embedding_model = "text-embedding-3-large"
-        self.embedding_version = "v1"
-        self.batch_size = 100
+        self.embedding_model = "text-embedding-3-large"  # Best quality
+        self.embedding_version = "v1"  # For versioning embeddings
+        self.batch_size = 100  # Batch embedding requests
         self.max_retries = 3
-        self.cache_duration_days = 30
+        self.cache_duration_days = 30  # Refresh old embeddings
 
         # Performance tracking
         self.stats = {
@@ -507,5 +509,5 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
         }
 
 
-def setup(bot):
-    bot.add_cog(ForumSimilarityBot(bot))
+async def setup(bot):
+    await bot.add_cog(ForumSimilarityBot(bot))
