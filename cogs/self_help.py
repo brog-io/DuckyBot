@@ -31,6 +31,7 @@ class SelfHelp(commands.Cog):
         self.pending_closures = {}
         self.solved_command_id = None
         self.unsolve_command_id = None
+        self.docsearch_command_id = None
 
     async def post_setup(self):
         try:
@@ -40,6 +41,8 @@ class SelfHelp(commands.Cog):
                     self.solved_command_id = cmd.id
                 elif cmd.name == "unsolve":
                     self.unsolve_command_id = cmd.id
+                elif cmd.name == "docsearch":
+                    self.docsearch_command_id = cmd.id
         except Exception as e:
             logger.error(f"Failed to fetch command IDs: {e}")
 
@@ -107,8 +110,13 @@ class SelfHelp(commands.Cog):
                 if self.solved_command_id
                 else "`/solved`"
             )
+            docsearch_hint = (
+                f"</docsearch:{self.docsearch_command_id}>"
+                if self.docsearch_command_id
+                else "`/docsearch`"
+            )
             await thread.send(
-                f"{answer}\n-# If your issue is resolved, please use the {solved_hint} command to close this thread."
+                f"{answer}\n-# If your issue is resolved, please use the {solved_hint} command to close this thread. If you'd like to ask me another question use {docsearch_hint}"
             )
 
             async for msg in thread.history(limit=5):
@@ -291,8 +299,10 @@ class SelfHelp(commands.Cog):
                         "isn't",
                         "isnt",
                         "unsolved",
-                        "didn’t",
+                        "didn't",
                         "didnt",
+                        "reply",
+                        "?",
                     ]
                 )
             ):
