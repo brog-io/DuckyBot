@@ -20,11 +20,13 @@ class ForumSimilarityBot(commands.Cog):
         self.solved_tag_name = "Solved"
 
         # Optimization settings
-        self.embedding_model = "text-embedding-3-large"  # Best quality
+        self.embedding_model = (
+            "text-embedding-3-small"  # 1536 dimensions instead of 3072
+        )
         self.embedding_version = "v1"  # For versioning embeddings
         self.batch_size = 100  # Batch embedding requests
         self.max_retries = 3
-        self.cache_duration_days = 30  # Refresh old embeddings
+        self.cache_duration_days = 60  # Refresh old embeddings
 
         # Performance tracking
         self.stats = {
@@ -77,8 +79,9 @@ class ForumSimilarityBot(commands.Cog):
                     "embedding"
                 ].tolist()
 
+        # Use compact JSON for embeddings (no pretty printing)
         with open(self.solved_posts_file, "w") as f:
-            json.dump(serializable_data, f, indent=2)
+            json.dump(serializable_data, f, separators=(",", ":"))
 
     async def generate_embeddings_batch(
         self, texts: List[str]
@@ -162,8 +165,10 @@ class ForumSimilarityBot(commands.Cog):
 
             # Check archived threads (limited batch)
             count = 0
-            async for thread in forum_channel.archived_threads(limit=100):
-                if count >= 50:  # Limit to avoid rate limits
+            async for thread in forum_channel.archived_threads(
+                limit=200
+            ):  # Increased from 100
+                if count >= 100:  # Increased from 50
                     break
                 if (
                     self.is_thread_solved(thread)
