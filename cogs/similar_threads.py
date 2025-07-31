@@ -179,6 +179,11 @@ class ForumSimilarityBot(commands.Cog):
         """Check for newly solved posts with batch processing and deduplication"""
         await self.bot.wait_until_ready()
 
+        # ADDED: Wait a bit after bot startup to avoid API spam
+        if not hasattr(self, "_first_run_done"):
+            await asyncio.sleep(10)
+            self._first_run_done = True
+
         forum_channel = self.bot.get_channel(self.forum_channel_id)
         if not forum_channel:
             return
@@ -201,11 +206,18 @@ class ForumSimilarityBot(commands.Cog):
                         new_thread_ids.add(thread_id)
                         new_threads.append(thread)
 
-            # Check archived threads (limited batch)
+            # Check archived threads (limited batch) - prioritize recent ones
             count = 0
-            async for thread in forum_channel.archived_threads(limit=200):
-                if count >= 100:
+            cutoff_date = datetime.now() - timedelta(
+                days=30
+            )  # Only check recent archived threads
+            async for thread in forum_channel.archived_threads(limit=100):
+                if count >= 50:
                     break
+
+                # Skip very old archived threads to avoid API issues
+                if thread.created_at < cutoff_date:
+                    continue
 
                 thread_id = str(thread.id)
                 if (
@@ -225,9 +237,11 @@ class ForumSimilarityBot(commands.Cog):
                     self._processing_threads.add(str(thread.id))
 
                 try:
-                    await self.batch_add_threads_to_index(new_threads)
+                    successfully_added = await self.batch_add_threads_to_index(
+                        new_threads
+                    )
                     logger.info(
-                        f"Added {len(new_threads)} new solved posts. Total: {len(self.solved_posts)}"
+                        f"Successfully added {successfully_added} new solved posts. Total: {len(self.solved_posts)}"
                     )
                 finally:
                     # ADDED: Remove from processing set
@@ -262,10 +276,10 @@ class ForumSimilarityBot(commands.Cog):
             logger.info(f"Refreshing {len(old_posts)} old embeddings...")
             await self.batch_update_embeddings(old_posts)
 
-    async def batch_add_threads_to_index(self, threads: List[discord.Thread]):
+    async def batch_add_threads_to_index(self, threads: List[discord.Thread]) -> int:
         """Add multiple threads to index with batch embedding generation"""
         if not threads:
-            return
+            return 0
 
         # ADDED: Final check for duplicates before processing
         unique_threads = []
@@ -276,36 +290,87 @@ class ForumSimilarityBot(commands.Cog):
                 logger.info(f"Skipping duplicate thread {thread.id} during batch add")
 
         if not unique_threads:
-            return
+            return 0
 
         # Collect all texts for batch processing
         texts = []
         thread_data = []
+        failed_threads = []
 
         for thread in unique_threads:
             try:
-                starter_message = await thread.fetch_message(thread.id)
-                combined_text = f"Title: {thread.name or 'Untitled'}\nBody: {starter_message.content or ''}"
+                # IMPROVED: Try multiple methods to get thread content
+                starter_message = None
+                combined_text = None
 
-                texts.append(combined_text)
-                thread_data.append(
-                    {
-                        "thread": thread,
-                        "starter_message": starter_message,
-                        "text": combined_text,
-                    }
-                )
+                # Method 1: Try fetching with thread.id (original starter message)
+                try:
+                    starter_message = await thread.fetch_message(thread.id)
+                    combined_text = f"Title: {thread.name or 'Untitled'}\nBody: {starter_message.content or ''}"
+                except discord.NotFound:
+                    # Method 2: Try getting the first message from history
+                    try:
+                        async for message in thread.history(limit=1, oldest_first=True):
+                            starter_message = message
+                            combined_text = f"Title: {thread.name or 'Untitled'}\nBody: {message.content or ''}"
+                            break
+                    except discord.Forbidden:
+                        # Method 3: Use just the title if we can't access messages
+                        combined_text = f"Title: {thread.name or 'Untitled'}\nBody: [Content not accessible]"
+                        logger.warning(
+                            f"Could not access messages for thread {thread.id}, using title only"
+                        )
+                except discord.Forbidden:
+                    # No permission to read messages, use title only
+                    combined_text = f"Title: {thread.name or 'Untitled'}\nBody: [Content not accessible]"
+                    logger.warning(
+                        f"No permission to read messages for thread {thread.id}, using title only"
+                    )
+
+                if combined_text:
+                    texts.append(combined_text)
+                    thread_data.append(
+                        {
+                            "thread": thread,
+                            "starter_message": starter_message,
+                            "text": combined_text,
+                        }
+                    )
+                else:
+                    failed_threads.append(thread.id)
+                    logger.warning(f"Could not get any content for thread {thread.id}")
+
             except Exception as e:
-                logger.error(f"Error preparing thread {thread.id}: {e}")
+                failed_threads.append(thread.id)
+                # IMPROVED: More specific error logging
+                if "10008" in str(e):  # Unknown Message
+                    logger.warning(
+                        f"Starter message not found for thread {thread.id} ({thread.name}): Message may have been deleted"
+                    )
+                elif "50001" in str(e):  # Missing Access
+                    logger.warning(
+                        f"No access to thread {thread.id} ({thread.name}): Missing permissions"
+                    )
+                else:
+                    logger.error(
+                        f"Unexpected error preparing thread {thread.id} ({thread.name}): {e}"
+                    )
                 continue
 
+        if failed_threads:
+            logger.info(
+                f"Failed to process {len(failed_threads)} threads out of {len(unique_threads)}"
+            )
+
         if not texts:
-            return
+            logger.warning("No threads could be processed for embedding generation")
+            return 0
 
         # Generate embeddings in batch
         embeddings = await self.generate_embeddings_batch(texts)
 
         # Store results
+        successful_adds = 0
         for i, data in enumerate(thread_data):
             if i < len(embeddings) and embeddings[i]:
                 thread = data["thread"]
@@ -317,21 +382,40 @@ class ForumSimilarityBot(commands.Cog):
                     # Store in index
                     self.solved_posts[thread_id] = {
                         "title": thread.name or "Untitled",
-                        "body": starter_message.content or "",
-                        "author_id": starter_message.author.id,
+                        "body": (
+                            starter_message.content
+                            if starter_message
+                            else "[Content not accessible]"
+                        ),
+                        "author_id": (
+                            starter_message.author.id if starter_message else None
+                        ),
                         "created_at": thread.created_at.isoformat(),
                         "indexed_at": datetime.now().isoformat(),
                         "url": thread.jump_url,
                         "embedding": embeddings[i],
                         "embedding_version": self.embedding_version,
+                        "content_accessible": starter_message
+                        is not None,  # Track if we got the actual content
                     }
 
                     # Add to memory cache
                     self.embedding_cache[thread_id] = np.array(embeddings[i])
+                    successful_adds += 1
                 else:
                     logger.warning(f"Thread {thread_id} already exists, skipping")
 
-        await self.save_solved_posts()  # CHANGED: Made async
+        await self.save_solved_posts()
+
+        if successful_adds > 0:
+            logger.info(f"Successfully indexed {successful_adds} threads")
+        if failed_threads:
+            logger.info(
+                f"Could not index {len(failed_threads)} threads due to access issues"
+            )
+
+        # Return the count of successful additions for accurate logging
+        return successful_adds
 
     async def batch_update_embeddings(self, old_posts: List[Tuple[str, Dict]]):
         """Update embeddings for old posts in batches"""
@@ -649,6 +733,46 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             logger.info(f"Cleaned {original_count - cleaned_count} duplicate entries")
             return original_count - cleaned_count
         return 0
+
+    # ADDED: Method to clean up inaccessible threads
+    async def cleanup_inaccessible_threads(self):
+        """Remove threads from index that are no longer accessible"""
+        forum_channel = self.bot.get_channel(self.forum_channel_id)
+        if not forum_channel:
+            return 0
+
+        inaccessible_threads = []
+
+        for thread_id in list(self.solved_posts.keys()):
+            try:
+                # Try to get the thread
+                thread = forum_channel.get_thread(int(thread_id))
+                if not thread:
+                    # Try archived threads
+                    found = False
+                    async for archived_thread in forum_channel.archived_threads(
+                        limit=None
+                    ):
+                        if str(archived_thread.id) == thread_id:
+                            found = True
+                            break
+
+                    if not found:
+                        inaccessible_threads.append(thread_id)
+            except Exception:
+                inaccessible_threads.append(thread_id)
+
+        if inaccessible_threads:
+            for thread_id in inaccessible_threads:
+                del self.solved_posts[thread_id]
+                self.embedding_cache.pop(thread_id, None)
+
+            await self.save_solved_posts()
+            logger.info(
+                f"Cleaned up {len(inaccessible_threads)} inaccessible threads from index"
+            )
+
+        return len(inaccessible_threads)
 
 
 async def setup(bot):
