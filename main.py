@@ -9,6 +9,9 @@ from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from utils.rate_limiter import RateLimiter
 from datetime import datetime
+import sys
+import traceback
+import time
 
 logging.captureWarnings(True)
 load_dotenv()
@@ -18,6 +21,11 @@ LOG_FILE_SIZE = 10_000_000
 LOG_BACKUP_COUNT = 30
 DEFAULT_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 DEFAULT_CONFIG_PATH = os.getenv("CONFIG_PATH", "config.json")
+
+# Restart configuration
+MAX_RESTART_ATTEMPTS = int(os.getenv("MAX_RESTART_ATTEMPTS", "10"))
+RESTART_DELAY_BASE = int(os.getenv("RESTART_DELAY_BASE", "30"))  # Base delay in seconds
+MAX_RESTART_DELAY = int(os.getenv("MAX_RESTART_DELAY", "300"))  # Max delay (5 minutes)
 
 
 def setup_logging() -> logging.Logger:
@@ -131,34 +139,116 @@ def validate_env_vars() -> None:
         raise EnvironmentError("DISCORD_TOKEN environment variable not found.")
 
 
-async def main() -> None:
+def is_recoverable_error(error: Exception) -> bool:
+    """Determine if an error is recoverable and the bot should restart"""
+    # Network/connection related errors - recoverable
+    if isinstance(
+        error,
+        (
+            discord.ConnectionClosed,
+            discord.GatewayNotFound,
+            aiohttp.ClientError,
+            OSError,  # Network errors
+            asyncio.TimeoutError,
+        ),
+    ):
+        return True
+
+    # Authentication errors - not recoverable
+    if isinstance(error, discord.LoginFailure):
+        return False
+
+    # Configuration errors - not recoverable
+    if isinstance(error, (EnvironmentError, FileNotFoundError, json.JSONDecodeError)):
+        return False
+
+    # For other errors, assume they might be recoverable
+    return True
+
+
+async def run_bot_with_restart() -> None:
+    """Run the bot with automatic restart capability"""
     logger = setup_logging()
-    try:
-        logger.info("Starting bot...")
-        validate_env_vars()
-        bot = EnteBot()
-        async with bot:
-            token = os.getenv("DISCORD_TOKEN")
-            logger.info("Bot initialized, connecting to Discord...")
-            try:
+    restart_count = 0
+    last_restart_time = 0
+
+    while restart_count < MAX_RESTART_ATTEMPTS:
+        try:
+            logger.info(
+                f"Starting bot... (Attempt {restart_count + 1}/{MAX_RESTART_ATTEMPTS})"
+            )
+            validate_env_vars()
+
+            bot = EnteBot()
+            async with bot:
+                token = os.getenv("DISCORD_TOKEN")
+                logger.info("Bot initialized, connecting to Discord...")
                 await bot.start(token)
-            except discord.LoginFailure as e:
+
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user - no restart")
+            break
+
+        except Exception as e:
+            restart_count += 1
+            error_type = type(e).__name__
+            logger.error(f"Bot crashed with {error_type}: {e}", exc_info=True)
+
+            # Check if error is recoverable
+            if not is_recoverable_error(e):
                 logger.error(
-                    f"Failed to login: Invalid token or connection issues: {e}",
-                    exc_info=True,
+                    f"Non-recoverable error detected: {error_type}. Stopping restart attempts."
                 )
-                raise
-            except discord.ConnectionClosed as e:
-                logger.error(f"Discord connection closed: {e}", exc_info=True)
-                raise
-            except Exception as e:
-                logger.error(f"Unexpected error during bot.start(): {e}", exc_info=True)
-                raise
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        raise
+                break
+
+            if restart_count >= MAX_RESTART_ATTEMPTS:
+                logger.error(
+                    f"Maximum restart attempts ({MAX_RESTART_ATTEMPTS}) reached. Giving up."
+                )
+                break
+
+            # Calculate restart delay with exponential backoff
+            current_time = time.time()
+            base_delay = RESTART_DELAY_BASE * (2 ** (restart_count - 1))
+            delay = min(base_delay, MAX_RESTART_DELAY)
+
+            # If we're restarting too quickly, add extra delay
+            if (
+                current_time - last_restart_time < 60
+            ):  # Less than 1 minute since last restart
+                delay = max(delay, 60)
+                logger.warning("Rapid restart detected, adding extra delay")
+
+            logger.info(
+                f"Restarting in {delay} seconds... (Attempt {restart_count + 1}/{MAX_RESTART_ATTEMPTS})"
+            )
+
+            # Clean up any remaining tasks
+            try:
+                # Cancel all pending tasks
+                pending = asyncio.all_tasks()
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+
+                # Wait for tasks to complete cancellation
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            except Exception as cleanup_error:
+                logger.warning(f"Error during cleanup: {cleanup_error}")
+
+            await asyncio.sleep(delay)
+            last_restart_time = time.time()
+
+    if restart_count >= MAX_RESTART_ATTEMPTS:
+        logger.critical("Bot failed to start after maximum restart attempts. Exiting.")
+        sys.exit(1)
+
+
+async def main() -> None:
+    """Main entry point with restart logic"""
+    await run_bot_with_restart()
 
 
 if __name__ == "__main__":

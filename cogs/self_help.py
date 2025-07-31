@@ -84,6 +84,62 @@ class SelfHelp(commands.Cog):
         self.processed_threads.add(thread.id)
 
         if thread.parent_id in SELFHELP_CHANNEL_IDS:
+            analyzing_msg = await thread.send("Analyzing your question, please wait...")
+
+            body = initial_message.content if initial_message else ""
+            if not body:
+                try:
+                    async for msg in thread.history(limit=1, oldest_first=True):
+                        body = msg.content
+                        break
+                except Exception as e:
+                    logger.error(f"Failed to fetch first message: {e}")
+
+            tag_names = []
+            if isinstance(thread.parent, discord.ForumChannel):
+                all_tags = {tag.id: tag.name for tag in thread.parent.available_tags}
+                tag_names = [
+                    all_tags.get(t.id if hasattr(t, "id") else t, "")
+                    for t in thread.applied_tags or []
+                ]
+
+            query = thread.name or body
+            answer = await self.query_api(query, body, tag_names)
+            solved_hint = (
+                f"</solved:{self.solved_command_id}>"
+                if self.solved_command_id
+                else "`/solved`"
+            )
+            docsearch_hint = (
+                f"</docsearch:{self.docsearch_command_id}>"
+                if self.docsearch_command_id
+                else "`/docsearch`"
+            )
+            response_text = (
+                f"{answer}\n-# If your issue is resolved, please use the {solved_hint} command to close this thread. "
+                f"If you'd like to ask me another question use {docsearch_hint}"
+            )
+
+            try:
+                await analyzing_msg.edit(content=response_text)
+            except Exception as e:
+                logger.error(f"Failed to edit analyzing message: {e}")
+
+        elif thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
+            solved_hint = (
+                f"</solved:{self.solved_command_id}>"
+                if self.solved_command_id
+                else "`/solved`"
+            )
+            await thread.send(
+                f"Remember to use {solved_hint} to mark your thread as solved once your question is answered."
+            )
+
+        if thread.id in self.processed_threads:
+            return
+        self.processed_threads.add(thread.id)
+
+        if thread.parent_id in SELFHELP_CHANNEL_IDS:
             await thread.send("Analyzing your question, please wait...")
 
             body = initial_message.content if initial_message else ""

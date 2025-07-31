@@ -9,6 +9,8 @@ import aiohttp
 import logging
 from html import unescape
 from datetime import datetime, timedelta
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ STATE_FILE = "ente_rss_state.json"
 
 # SAFETY LIMITS
 MAX_AGE_HOURS = 24  # Don't post items older than 24 hours
+FEED_TIMEOUT = 60  # Timeout for feed parsing in seconds
 
 
 def get_first_str(val):
@@ -200,6 +203,22 @@ def strip_tags(html: str) -> str:
     return re.sub(r"<.*?>", "", html)
 
 
+async def parse_feed_with_timeout(url: str, timeout: int = FEED_TIMEOUT):
+    """Parse RSS feed with timeout to prevent blocking the event loop"""
+    try:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            return await asyncio.wait_for(
+                loop.run_in_executor(executor, feedparser.parse, url), timeout=timeout
+            )
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout ({timeout}s) parsing feed: {url}")
+        return None
+    except Exception as e:
+        logger.error(f"Error parsing feed {url}: {e}")
+        return None
+
+
 class RSSFeedCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -216,8 +235,8 @@ class RSSFeedCog(commands.Cog):
 
         # --- BLOG FEED ---
         try:
-            d = feedparser.parse(BLOG_FEED["url"])
-            if d.entries:
+            d = await parse_feed_with_timeout(BLOG_FEED["url"])
+            if d and d.entries:
                 latest = d.entries[0]
                 entry_id = getattr(latest, "id", latest.link)
                 stored_id = self.state.get(BLOG_FEED["url"])
@@ -278,15 +297,17 @@ class RSSFeedCog(commands.Cog):
                             logger.warning(
                                 "Stored blog entry ID not found in feed, not updating state"
                             )
+            elif d is None:
+                logger.error(f"Failed to parse blog feed: {BLOG_FEED['url']}")
 
         except Exception as e:
             logger.error(f"RSS error for blog: {e}")
 
         # --- MASTODON FEED ---
         try:
-            d = feedparser.parse(MASTODON_FEED["url"])
-            author_icon = self._get_feed_icon(d)
-            if d.entries:
+            d = await parse_feed_with_timeout(MASTODON_FEED["url"])
+            if d and d.entries:
+                author_icon = self._get_feed_icon(d)
                 latest = d.entries[0]
                 entry_id = getattr(latest, "id", latest.link)
                 stored_id = self.state.get(MASTODON_FEED["url"])
@@ -344,6 +365,8 @@ class RSSFeedCog(commands.Cog):
                             logger.warning(
                                 "Stored Mastodon entry ID not found in feed, not updating state"
                             )
+            elif d is None:
+                logger.error(f"Failed to parse Mastodon feed: {MASTODON_FEED['url']}")
 
         except Exception as e:
             logger.error(f"RSS error for Mastodon: {e}")
