@@ -66,7 +66,6 @@ FEEDS = {
     },
 }
 
-ENTE_ICON_URL = "https://cdn.fosstodon.org/accounts/avatars/112/972/617/472/440/727/original/1bf22f4a9a82e4fc.png"
 STATE_FILE = "ente_rss_state.json"
 
 # SAFETY LIMITS
@@ -99,7 +98,7 @@ def load_state():
             d = feedparser.parse(feed_cfg["url"])
             if d.entries:
                 entry = d.entries[0]
-                entry_id = getattr(entry, "id", entry.link)
+                entry_id = getattr(entry, "id", getattr(entry, "link", None))
                 state[feed_cfg["url"]] = entry_id
             else:
                 state[feed_cfg["url"]] = None
@@ -142,105 +141,6 @@ class LinkButton(discord.ui.View):
         )
 
 
-async def extract_image_url(entry, fallback_url=None):
-    img_url = entry.get("media_content__@__url")
-    img_type = entry.get("media_content__@__type", "")
-    if img_url and img_type.startswith("image/"):
-        return img_url
-
-    if "media_content" in entry:
-        media_list = entry["media_content"]
-        if isinstance(media_list, list) and media_list:
-            for media in media_list:
-                url = media.get("url")
-                typ = media.get("type", "")
-                if url and typ.startswith("image/"):
-                    return url
-
-    enclosures = entry.get("enclosures")
-    if enclosures and isinstance(enclosures, list):
-        for enc in enclosures:
-            if "image" in enc.get("type", "") and enc.get("url"):
-                return enc["url"]
-
-    if entry.get("image"):
-        if isinstance(entry["image"], dict):
-            image = entry["image"].get("href")
-            return image
-        if isinstance(entry["image"], str):
-            return entry["image"]
-
-    for field in ["summary", "description", "content"]:
-        html = get_first_str(entry.get(field))
-        if html and isinstance(html, str):
-            m = re.search(r'<img[^>]+src="([^"]+)"', html)
-            if m:
-                return m.group(1)
-
-    if fallback_url:
-        og_image = await fetch_og_image(fallback_url)
-        if og_image:
-            return og_image
-
-    return None
-
-
-async def fetch_og_image(url):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                html = await resp.text()
-                m = re.search(
-                    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-                    html,
-                    re.IGNORECASE,
-                )
-                if m:
-                    return m.group(1)
-    except Exception as e:
-        logger.warning(f"Error fetching og:image for {url}: {e}")
-    return None
-
-
-def html_to_discord_md(html: str) -> str:
-    if not html:
-        return ""
-    # Replace <br> and <br/> with single newline
-    html = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
-    # Replace block-ending tags with newline
-    html = re.sub(r"</(p|div)>", "\n", html, flags=re.IGNORECASE)
-    # Remove block-opening tags
-    html = re.sub(r"<(p|div)[^>]*>", "", html, flags=re.IGNORECASE)
-    # Lists: <li>...</li> becomes bullet points
-    html = re.sub(r"<li>(.*?)</li>", r"• \1\n", html, flags=re.IGNORECASE)
-    # Strip <a href="...">...</a>, keep only the visible text (removes links)
-    html = re.sub(
-        r'<a [^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-        lambda m: strip_tags(m.group(2)).strip(),
-        html,
-        flags=re.IGNORECASE,
-    )
-    # Remove all other tags
-    html = re.sub(r"<.*?>", "", html)
-    # Decode HTML entities
-    text = unescape(html)
-    # Collapse 3+ newlines to 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    # Strip trailing whitespace on each line
-    text = "\n".join(line.rstrip() for line in text.splitlines())
-    # Remove leading/trailing blank lines
-    text = text.strip("\n")
-    # Ensure paragraphs have double newlines
-    text = re.sub(r"([^\n])\n([^\n])", r"\1\n\n\2", text)
-    # Final collapse: more than 2 newlines to 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text
-
-
-def strip_tags(html: str) -> str:
-    return re.sub(r"<.*?>", "", html)
-
-
 async def parse_feed_with_timeout(url: str, timeout: int = FEED_TIMEOUT):
     """Parse RSS feed with timeout to prevent blocking the event loop"""
     try:
@@ -257,43 +157,28 @@ async def parse_feed_with_timeout(url: str, timeout: int = FEED_TIMEOUT):
         return None
 
 
-def get_entry_title(entry, feed_cfg: dict) -> str:
-    """Extract and format entry title based on feed type"""
-    title = get_first_str(entry.title) or "Untitled"
+def get_thread_title_and_content(entry, feed_cfg: dict):
+    """Get thread title and content for the post"""
+    url = entry.link
 
-    # For social media feeds, truncate long titles and add context
-    if feed_cfg["type"] == "social":
-        # Remove HTML tags and clean up
-        clean_title = strip_tags(title)
-        # Truncate if too long
-        if len(clean_title) > 100:
-            clean_title = clean_title[:97] + "..."
-        return clean_title
-
-    return title
-
-
-def get_entry_content(entry, feed_cfg: dict) -> str:
-    """Extract and format entry content based on feed type"""
     if feed_cfg["type"] == "blog":
-        # For blog posts, just return empty as we're creating a simple thread
-        return ""
+        # For blog posts, try to get the actual title
+        title = get_first_str(getattr(entry, "title", None))
+        if not title:
+            title = "New Blog Post"
 
-    # For social media, get the content/summary
-    content = ""
-    for field in ["summary", "description", "content"]:
-        content = get_first_str(entry.get(field, ""))
-        if content:
-            break
+        thread_title = f"{feed_cfg['emoji']} {title}"
+        thread_content = f"📰 [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
+    else:
+        # For social posts, use a simple format
+        thread_title = f"{feed_cfg['emoji']} New {feed_cfg['name']} Post"
+        thread_content = f"{feed_cfg['emoji']} [**New {feed_cfg['name']} Post**]({url}) **|** {feed_cfg['role_mention']}"
 
-    if content:
-        clean_content = html_to_discord_md(content)
-        # Truncate if too long for Discord
-        if len(clean_content) > 1900:  # Leave room for other content
-            clean_content = clean_content[:1897] + "..."
-        return clean_content
+    # Ensure thread title fits Discord's limits
+    if len(thread_title) > 95:
+        thread_title = thread_title[:92] + "..."
 
-    return ""
+    return thread_title, thread_content
 
 
 class RSSFeedCog(commands.Cog):
@@ -315,36 +200,54 @@ class RSSFeedCog(commands.Cog):
                 d = await parse_feed_with_timeout(feed_cfg["url"])
                 if d and d.entries:
                     latest = d.entries[0]
-                    entry_id = getattr(latest, "id", latest.link)
+                    entry_id = getattr(latest, "id", getattr(latest, "link", None))
                     stored_id = self.state.get(feed_cfg["url"])
+
+                    # Skip processing if we don't have a valid entry ID
+                    if not entry_id:
+                        logger.warning(
+                            f"Skipping {feed_key} - latest entry has no valid ID or link"
+                        )
+                        continue
 
                     if stored_id != entry_id:
                         new_entries = []
                         found_stored = False
 
                         for i, entry in enumerate(d.entries):
-                            eid = getattr(entry, "id", entry.link)
+                            try:
+                                eid = getattr(entry, "id", getattr(entry, "link", None))
 
-                            # If we find the stored entry, stop here
-                            if eid == stored_id:
-                                found_stored = True
-                                break
+                                # Skip entries without valid IDs
+                                if not eid:
+                                    logger.warning(
+                                        f"Skipping {feed_key} entry {i} - no valid ID or link"
+                                    )
+                                    continue
 
-                            # Safety: Don't post old entries
-                            if is_entry_too_old(entry):
-                                logger.info(
-                                    f"Skipping old {feed_key} entry: {entry.get('title', 'Unknown')}"
+                                # If we find the stored entry, stop here
+                                if eid == stored_id:
+                                    found_stored = True
+                                    break
+
+                                # Safety: Don't post old entries
+                                if is_entry_too_old(entry):
+                                    logger.info(f"Skipping old {feed_key} entry")
+                                    continue
+
+                                new_entries.append(entry)
+
+                                # Safety: If we've gone through too many entries without finding stored ID, stop
+                                if i >= 20:  # Arbitrary limit
+                                    logger.warning(
+                                        f"Stopped searching after 20 entries for {feed_key}, stored ID not found"
+                                    )
+                                    break
+                            except Exception as entry_error:
+                                logger.warning(
+                                    f"Error processing entry {i} for {feed_key}: {entry_error}"
                                 )
                                 continue
-
-                            new_entries.append(entry)
-
-                            # Safety: If we've gone through too many entries without finding stored ID, stop
-                            if i >= 20:  # Arbitrary limit
-                                logger.warning(
-                                    f"Stopped searching after 20 entries for {feed_key}, stored ID not found"
-                                )
-                                break
 
                         if new_entries:
                             forum_channel = self.bot.get_channel(
@@ -365,8 +268,9 @@ class RSSFeedCog(commands.Cog):
 
                             # Only update state if we found the stored ID or it's the first run
                             if found_stored or stored_id is None:
-                                self.state[feed_cfg["url"]] = entry_id
-                                changed = True
+                                if entry_id:  # Only update if we have a valid entry_id
+                                    self.state[feed_cfg["url"]] = entry_id
+                                    changed = True
                             else:
                                 logger.warning(
                                     f"Stored {feed_key} entry ID not found in feed, not updating state"
@@ -383,91 +287,97 @@ class RSSFeedCog(commands.Cog):
     async def send_forum_post(
         self, forum_channel, entry, feed_cfg: dict, feed_name: str
     ):
-        """Send a post to a forum channel - unified method for all feeds"""
-        title = get_entry_title(entry, feed_cfg)
+        """Send a post to a forum channel - simplified unified method"""
+        if not forum_channel or not isinstance(forum_channel, discord.ForumChannel):
+            return
+
+        thread_title, thread_content = get_thread_title_and_content(entry, feed_cfg)
         url = entry.link
-        content = get_entry_content(entry, feed_cfg)
 
-        if forum_channel and isinstance(forum_channel, discord.ForumChannel):
-            # Create the thread title (max 100 characters for Discord)
-            thread_title = f"{feed_cfg['emoji']} {title}"
-            if len(thread_title) > 95:
-                thread_title = thread_title[:92] + "..."
+        try:
+            # Prepare thread creation arguments
+            thread_args = {
+                "name": thread_title,
+                "content": thread_content,
+                "view": LinkButton(url, feed_cfg["button_text"]),
+            }
 
-            # Create the initial post content
-            if feed_cfg["type"] == "blog":
-                # For blog posts, simple format
-                thread_content = (
-                    f"📰 [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
+            # Add tags for social feeds
+            if feed_cfg["type"] == "social" and "tag_id" in feed_cfg:
+                try:
+                    # Get the tag object from the forum
+                    available_tags = forum_channel.available_tags
+                    tag = None
+                    for available_tag in available_tags:
+                        if available_tag.id == feed_cfg["tag_id"]:
+                            tag = available_tag
+                            break
+
+                    if tag:
+                        thread_args["applied_tags"] = [tag]
+                    else:
+                        logger.warning(
+                            f"Tag ID {feed_cfg['tag_id']} not found for {feed_name}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to apply tag for {feed_name}: {e}")
+
+            # Create the thread
+            thread = await forum_channel.create_thread(**thread_args)
+            logger.info(f"Posted {feed_name}: {thread_title}")
+
+        except Exception as e:
+            logger.error(f"Failed to post {feed_name} thread: {e}")
+
+    @commands.command(name="testfeed")
+    @commands.has_permissions(manage_guild=True)
+    async def test_feed(self, ctx, feed_name: str = None):
+        """Test a specific feed or list all feeds (Admin only)"""
+        if feed_name is None:
+            embed = discord.Embed(title="Available RSS Feeds", color=0x1DB954)
+            for key, feed_cfg in FEEDS.items():
+                embed.add_field(
+                    name=f"{feed_cfg['emoji']} {feed_cfg['name']}",
+                    value=f"Type: {feed_cfg['type']}\nURL: {feed_cfg['url'][:50]}...",
+                    inline=False,
+                )
+            await ctx.send(embed=embed)
+            return
+
+        if feed_name not in FEEDS:
+            await ctx.send(
+                f"Feed '{feed_name}' not found. Available feeds: {', '.join(FEEDS.keys())}"
+            )
+            return
+
+        feed_cfg = FEEDS[feed_name]
+
+        embed = discord.Embed(
+            title=f"{feed_cfg['emoji']} Testing {feed_cfg['name']} Feed", color=0x1DB954
+        )
+        embed.add_field(name="URL", value=feed_cfg["url"], inline=False)
+        embed.add_field(name="Type", value=feed_cfg["type"], inline=True)
+        embed.add_field(name="Emoji", value=f"{feed_cfg['emoji']}", inline=True)
+
+        try:
+            d = await parse_feed_with_timeout(feed_cfg["url"])
+            if d and d.entries:
+                embed.add_field(name="Status", value="✅ Feed accessible", inline=False)
+                embed.add_field(
+                    name="Latest Entry",
+                    value=f"Link: {d.entries[0].link}",
+                    inline=False,
                 )
             else:
-                # For social media posts, include content and formatting
-                thread_content = f"{feed_cfg['emoji']} **{feed_cfg['name']} Post** **|** {feed_cfg['role_mention']}\n\n"
-                if content:
-                    thread_content += f"{content}\n\n"
-                thread_content += f"[View Original Post]({url})"
+                embed.add_field(
+                    name="Status", value="❌ Feed not accessible or empty", inline=False
+                )
+        except Exception as e:
+            embed.add_field(
+                name="Status", value=f"❌ Error: {str(e)[:100]}", inline=False
+            )
 
-            try:
-                # Prepare thread creation arguments
-                thread_args = {
-                    "name": thread_title,
-                    "content": thread_content,
-                    "view": LinkButton(url, feed_cfg["button_text"]),
-                }
-
-                # Add tags for social feeds
-                if feed_cfg["type"] == "social" and "tag_id" in feed_cfg:
-                    try:
-                        # Get the tag object from the forum - tags are stored as forum channel tags
-                        available_tags = forum_channel.available_tags
-                        tag = None
-                        for available_tag in available_tags:
-                            if available_tag.id == feed_cfg["tag_id"]:
-                                tag = available_tag
-                                break
-
-                        if tag:
-                            thread_args["applied_tags"] = [tag]
-                        else:
-                            logger.warning(
-                                f"Tag ID {feed_cfg['tag_id']} not found for {feed_name}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to apply tag for {feed_name}: {e}")
-
-                # Try to get image for social media posts
-                image_url = None
-                if feed_cfg["type"] == "social":
-                    image_url = await extract_image_url(entry, url)
-
-                # Create the thread
-                thread = await forum_channel.create_thread(**thread_args)
-
-                # If there's an image and it's a social post, send it as a follow-up
-                if image_url and feed_cfg["type"] == "social":
-                    try:
-                        embed = discord.Embed(color=0x1DB954)
-                        embed.set_image(url=image_url)
-
-                        # Add timestamp if available
-                        published = entry.get("published")
-                        if published:
-                            try:
-                                timestamp = dateparser.parse(published)
-                                if timestamp:
-                                    embed.timestamp = timestamp
-                            except Exception:
-                                pass
-
-                        await thread.thread.send(embed=embed)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to send image for {feed_name} post: {e}"
-                        )
-
-                logger.info(f"Posted {feed_name}: {title}")
-            except Exception as e:
-                logger.error(f"Failed to post {feed_name} thread: {e}")
+        await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
