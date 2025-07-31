@@ -14,18 +14,56 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
-BLOG_FEED = {
-    "url": "https://ente.io/rss.xml",
-    "role_mention": "<@&1050340002028077106>",
-    "forum_channel_id": 1121470028223623229,
-    "button_text": "Link",
-}
-
-MASTODON_FEED = {
-    "url": "https://fosstodon.org/@ente.rss",
-    "button_text": "Link",
-    "role_mention": "<@&1214608287597723739>",
-    "text_channel_id": 973177352446173194,
+FEEDS = {
+    "blog": {
+        "url": "https://ente.io/rss.xml",
+        "role_mention": "<@&1050340002028077106>",
+        "forum_channel_id": 1121470028223623229,
+        "button_text": "Read Blog",
+        "emoji": "📰",
+        "name": "Blog",
+        "type": "blog",
+    },
+    "mastodon": {
+        "url": "https://fosstodon.org/@ente.rss",
+        "button_text": "View Post",
+        "role_mention": "<@&1214608287597723739>",
+        "forum_channel_id": 1400567228314943529,
+        "tag_id": 1400569634746269918,
+        "emoji": "<:Mastodon_Logo:1312884790210461756>",
+        "name": "Mastodon",
+        "type": "social",
+    },
+    "bluesky": {
+        "url": "https://bsky.app/profile/did:plc:uah5jix7ykdrae7a2ezp3rye/rss",
+        "button_text": "View Post",
+        "role_mention": "<@&1400571735904092230>",
+        "forum_channel_id": 1400567228314943529,
+        "tag_id": 1400569656971886803,
+        "emoji": "<:Bluesky_Logo:1400570292740296894>",
+        "name": "Bluesky",
+        "type": "social",
+    },
+    "twitter": {
+        "url": "https://nitter.net/enteio/rss",
+        "button_text": "View Tweet",
+        "role_mention": "<@&1400571684867543233>",
+        "forum_channel_id": 1400567228314943529,
+        "tag_id": 1400569666996535419,
+        "emoji": "<:X_Logo:1400570906644058143>",
+        "name": "Twitter",
+        "type": "social",
+    },
+    "reddit": {
+        "url": "https://www.reddit.com/r/enteio/.rss",
+        "button_text": "View Post",
+        "role_mention": "<@&1400571795848958052>",
+        "forum_channel_id": 1400567228314943529,
+        "tag_id": 1400569681387061299,
+        "emoji": "<:Reddit_Logo:1400570705073934397>",
+        "name": "Reddit",
+        "type": "social",
+    },
 }
 
 ENTE_ICON_URL = "https://cdn.fosstodon.org/accounts/avatars/112/972/617/472/440/727/original/1bf22f4a9a82e4fc.png"
@@ -56,7 +94,7 @@ def load_state():
 
     # Initialize state with current entries
     state = {"last_check": datetime.now().isoformat()}
-    for feed_cfg in [BLOG_FEED, MASTODON_FEED]:
+    for feed_key, feed_cfg in FEEDS.items():
         try:
             d = feedparser.parse(feed_cfg["url"])
             if d.entries:
@@ -219,6 +257,45 @@ async def parse_feed_with_timeout(url: str, timeout: int = FEED_TIMEOUT):
         return None
 
 
+def get_entry_title(entry, feed_cfg: dict) -> str:
+    """Extract and format entry title based on feed type"""
+    title = get_first_str(entry.title) or "Untitled"
+
+    # For social media feeds, truncate long titles and add context
+    if feed_cfg["type"] == "social":
+        # Remove HTML tags and clean up
+        clean_title = strip_tags(title)
+        # Truncate if too long
+        if len(clean_title) > 100:
+            clean_title = clean_title[:97] + "..."
+        return clean_title
+
+    return title
+
+
+def get_entry_content(entry, feed_cfg: dict) -> str:
+    """Extract and format entry content based on feed type"""
+    if feed_cfg["type"] == "blog":
+        # For blog posts, just return empty as we're creating a simple thread
+        return ""
+
+    # For social media, get the content/summary
+    content = ""
+    for field in ["summary", "description", "content"]:
+        content = get_first_str(entry.get(field, ""))
+        if content:
+            break
+
+    if content:
+        clean_content = html_to_discord_md(content)
+        # Truncate if too long for Discord
+        if len(clean_content) > 1900:  # Leave room for other content
+            clean_content = clean_content[:1897] + "..."
+        return clean_content
+
+    return ""
+
+
 class RSSFeedCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -233,204 +310,164 @@ class RSSFeedCog(commands.Cog):
         await self.bot.wait_until_ready()
         changed = False
 
-        # --- BLOG FEED ---
-        try:
-            d = await parse_feed_with_timeout(BLOG_FEED["url"])
-            if d and d.entries:
-                latest = d.entries[0]
-                entry_id = getattr(latest, "id", latest.link)
-                stored_id = self.state.get(BLOG_FEED["url"])
+        for feed_key, feed_cfg in FEEDS.items():
+            try:
+                d = await parse_feed_with_timeout(feed_cfg["url"])
+                if d and d.entries:
+                    latest = d.entries[0]
+                    entry_id = getattr(latest, "id", latest.link)
+                    stored_id = self.state.get(feed_cfg["url"])
 
-                if stored_id != entry_id:
-                    new_entries = []
-                    found_stored = False
+                    if stored_id != entry_id:
+                        new_entries = []
+                        found_stored = False
 
-                    # IMPROVED: Add safety checks
-                    for i, entry in enumerate(d.entries):
+                        for i, entry in enumerate(d.entries):
+                            eid = getattr(entry, "id", entry.link)
 
-                        eid = getattr(entry, "id", entry.link)
+                            # If we find the stored entry, stop here
+                            if eid == stored_id:
+                                found_stored = True
+                                break
 
-                        # If we find the stored entry, stop here
-                        if eid == stored_id:
-                            found_stored = True
-                            break
-
-                        # Safety: Don't post old entries
-                        if is_entry_too_old(entry):
-                            logger.info(
-                                f"Skipping old blog entry: {entry.get('title', 'Unknown')}"
-                            )
-                            continue
-
-                        new_entries.append(entry)
-
-                        # Safety: If we've gone through too many entries without finding stored ID, stop
-                        if i >= 20:  # Arbitrary limit
-                            logger.warning(
-                                f"Stopped searching after 20 entries, stored ID not found"
-                            )
-                            break
-
-                    if new_entries:
-                        forum_channel = self.bot.get_channel(
-                            BLOG_FEED["forum_channel_id"]
-                        )
-                        if forum_channel:
-                            logger.info(f"Posting {len(new_entries)} new blog entries")
-                            for entry in reversed(new_entries):
-                                await self.send_blog_post(
-                                    forum_channel,
-                                    entry,
-                                    BLOG_FEED["role_mention"],
-                                    BLOG_FEED["button_text"],
+                            # Safety: Don't post old entries
+                            if is_entry_too_old(entry):
+                                logger.info(
+                                    f"Skipping old {feed_key} entry: {entry.get('title', 'Unknown')}"
                                 )
-                        else:
-                            logger.error(
-                                f"Blog forum channel not found: {BLOG_FEED['forum_channel_id']}"
-                            )
+                                continue
 
-                        # Only update state if we found the stored ID or it's the first run
-                        if found_stored or stored_id is None:
-                            self.state[BLOG_FEED["url"]] = entry_id
-                            changed = True
-                        else:
-                            logger.warning(
-                                "Stored blog entry ID not found in feed, not updating state"
-                            )
-            elif d is None:
-                logger.error(f"Failed to parse blog feed: {BLOG_FEED['url']}")
+                            new_entries.append(entry)
 
-        except Exception as e:
-            logger.error(f"RSS error for blog: {e}")
-
-        # --- MASTODON FEED ---
-        try:
-            d = await parse_feed_with_timeout(MASTODON_FEED["url"])
-            if d and d.entries:
-                author_icon = self._get_feed_icon(d)
-                latest = d.entries[0]
-                entry_id = getattr(latest, "id", latest.link)
-                stored_id = self.state.get(MASTODON_FEED["url"])
-
-                if stored_id != entry_id:
-                    new_entries = []
-                    found_stored = False
-
-                    # IMPROVED: Same safety checks for Mastodon
-                    for i, entry in enumerate(d.entries):
-
-                        eid = getattr(entry, "id", entry.link)
-
-                        if eid == stored_id:
-                            found_stored = True
-                            break
-
-                        if is_entry_too_old(entry):
-                            logger.info(
-                                f"Skipping old Mastodon entry: {entry.get('title', 'Unknown')}"
-                            )
-                            continue
-
-                        new_entries.append(entry)
-
-                        if i >= 20:
-                            logger.warning(
-                                f"Stopped searching after 20 entries, stored ID not found"
-                            )
-                            break
-
-                    if new_entries:
-                        channel = self.bot.get_channel(MASTODON_FEED["text_channel_id"])
-                        if channel:
-                            logger.info(
-                                f"Posting {len(new_entries)} new Mastodon entries"
-                            )
-                            for entry in reversed(new_entries):
-                                await self.send_mastodon_embed(
-                                    channel,
-                                    entry,
-                                    MASTODON_FEED["role_mention"],
-                                    MASTODON_FEED["button_text"],
-                                    author_icon,
+                            # Safety: If we've gone through too many entries without finding stored ID, stop
+                            if i >= 20:  # Arbitrary limit
+                                logger.warning(
+                                    f"Stopped searching after 20 entries for {feed_key}, stored ID not found"
                                 )
-                        else:
-                            logger.error(
-                                f"Mastodon channel not found: {MASTODON_FEED['text_channel_id']}"
-                            )
+                                break
 
-                        if found_stored or stored_id is None:
-                            self.state[MASTODON_FEED["url"]] = entry_id
-                            changed = True
-                        else:
-                            logger.warning(
-                                "Stored Mastodon entry ID not found in feed, not updating state"
+                        if new_entries:
+                            forum_channel = self.bot.get_channel(
+                                feed_cfg["forum_channel_id"]
                             )
-            elif d is None:
-                logger.error(f"Failed to parse Mastodon feed: {MASTODON_FEED['url']}")
+                            if forum_channel:
+                                logger.info(
+                                    f"Posting {len(new_entries)} new {feed_key} entries"
+                                )
+                                for entry in reversed(new_entries):
+                                    await self.send_forum_post(
+                                        forum_channel, entry, feed_cfg, feed_key
+                                    )
+                            else:
+                                logger.error(
+                                    f"{feed_key} forum channel not found: {feed_cfg['forum_channel_id']}"
+                                )
 
-        except Exception as e:
-            logger.error(f"RSS error for Mastodon: {e}")
+                            # Only update state if we found the stored ID or it's the first run
+                            if found_stored or stored_id is None:
+                                self.state[feed_cfg["url"]] = entry_id
+                                changed = True
+                            else:
+                                logger.warning(
+                                    f"Stored {feed_key} entry ID not found in feed, not updating state"
+                                )
+                elif d is None:
+                    logger.error(f"Failed to parse {feed_key} feed: {feed_cfg['url']}")
+
+            except Exception as e:
+                logger.error(f"RSS error for {feed_key}: {e}")
 
         if changed:
             save_state(self.state)
 
-    @staticmethod
-    def _get_feed_icon(d):
-        if hasattr(d.feed, "image") and hasattr(d.feed.image, "href"):
-            return d.feed.image.href
-        return ENTE_ICON_URL
-
-    async def send_blog_post(
-        self, forum_channel, entry, role_mention: str, button_text: str
+    async def send_forum_post(
+        self, forum_channel, entry, feed_cfg: dict, feed_name: str
     ):
-        title = get_first_str(entry.title)
+        """Send a post to a forum channel - unified method for all feeds"""
+        title = get_entry_title(entry, feed_cfg)
         url = entry.link
+        content = get_entry_content(entry, feed_cfg)
+
         if forum_channel and isinstance(forum_channel, discord.ForumChannel):
-            content = f"📰 [**{title}**]({url}) **|** {role_mention}"
-            try:
-                thread = await forum_channel.create_thread(
-                    name=title[:95], content=content, view=LinkButton(url, button_text)
+            # Create the thread title (max 100 characters for Discord)
+            thread_title = f"{feed_cfg['emoji']} {title}"
+            if len(thread_title) > 95:
+                thread_title = thread_title[:92] + "..."
+
+            # Create the initial post content
+            if feed_cfg["type"] == "blog":
+                # For blog posts, simple format
+                thread_content = (
+                    f"📰 [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
                 )
-                logger.info(f"Posted blog: {title}")
-            except Exception as e:
-                logger.error(f"Failed to post blog thread: {e}")
+            else:
+                # For social media posts, include content and formatting
+                thread_content = f"{feed_cfg['emoji']} **{feed_cfg['name']} Post** **|** {feed_cfg['role_mention']}\n\n"
+                if content:
+                    thread_content += f"{content}\n\n"
+                thread_content += f"[View Original Post]({url})"
 
-    async def send_mastodon_embed(
-        self,
-        channel: discord.TextChannel,
-        entry,
-        role_mention: str,
-        button_text: str,
-        author_icon: str,
-    ):
-        author = get_first_str(entry.get("author", "Ente(@fosstodon.org)"))
-        summary = get_first_str(entry.get("summary", ""))
-        link = entry.link
-        published = entry.get("published", None)
-
-        clean_text = html_to_discord_md(summary)
-
-        image_url = await extract_image_url(entry)
-        timestamp = None
-        if published:
             try:
-                timestamp = dateparser.parse(published)
-            except Exception:
-                timestamp = None
-        embed = discord.Embed(description=clean_text, color=0x1DB954)
-        embed.set_author(name=author, url=link, icon_url=author_icon)
-        if image_url:
-            embed.set_image(url=image_url)
-        if timestamp:
-            embed.timestamp = timestamp
+                # Prepare thread creation arguments
+                thread_args = {
+                    "name": thread_title,
+                    "content": thread_content,
+                    "view": LinkButton(url, feed_cfg["button_text"]),
+                }
 
-        try:
-            await channel.send(
-                content=role_mention, embed=embed, view=LinkButton(link, button_text)
-            )
-            logger.info(f"Posted Mastodon: {author}")
-        except Exception as e:
-            logger.error(f"Failed to post Mastodon embed: {e}")
+                # Add tags for social feeds
+                if feed_cfg["type"] == "social" and "tag_id" in feed_cfg:
+                    try:
+                        # Get the tag object from the forum - tags are stored as forum channel tags
+                        available_tags = forum_channel.available_tags
+                        tag = None
+                        for available_tag in available_tags:
+                            if available_tag.id == feed_cfg["tag_id"]:
+                                tag = available_tag
+                                break
+
+                        if tag:
+                            thread_args["applied_tags"] = [tag]
+                        else:
+                            logger.warning(
+                                f"Tag ID {feed_cfg['tag_id']} not found for {feed_name}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Failed to apply tag for {feed_name}: {e}")
+
+                # Try to get image for social media posts
+                image_url = None
+                if feed_cfg["type"] == "social":
+                    image_url = await extract_image_url(entry, url)
+
+                # Create the thread
+                thread = await forum_channel.create_thread(**thread_args)
+
+                # If there's an image and it's a social post, send it as a follow-up
+                if image_url and feed_cfg["type"] == "social":
+                    try:
+                        embed = discord.Embed(color=0x1DB954)
+                        embed.set_image(url=image_url)
+
+                        # Add timestamp if available
+                        published = entry.get("published")
+                        if published:
+                            try:
+                                timestamp = dateparser.parse(published)
+                                if timestamp:
+                                    embed.timestamp = timestamp
+                            except Exception:
+                                pass
+
+                        await thread.thread.send(embed=embed)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to send image for {feed_name} post: {e}"
+                        )
+
+                logger.info(f"Posted {feed_name}: {title}")
+            except Exception as e:
+                logger.error(f"Failed to post {feed_name} thread: {e}")
 
 
 async def setup(bot: commands.Bot):

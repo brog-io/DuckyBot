@@ -559,7 +559,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
                 await self.send_similarity_notification(thread, similar_posts)
                 logger.info("Sent similarity notification")
             else:
-                logger.info("ℹNo similar posts found above threshold")
+                logger.info("No similar posts found above threshold")
 
         except Exception as e:
             logger.error(f"Error processing new thread: {e}")
