@@ -54,16 +54,6 @@ FEEDS = {
         "name": "Twitter",
         "type": "social",
     },
-    "reddit": {
-        "url": "https://old.reddit.com/r/enteio/.rss",
-        "button_text": "View Post",
-        "role_mention": "<@&1400571795848958052>",
-        "forum_channel_id": 1400567228314943529,
-        "tag_id": 1400569681387061299,
-        "emoji": "<:Reddit_Logo:1400570705073934397>",
-        "name": "Reddit",
-        "type": "social",
-    },
 }
 
 STATE_FILE = "ente_rss_state.json"
