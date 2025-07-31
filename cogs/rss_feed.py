@@ -55,7 +55,7 @@ FEEDS = {
         "type": "social",
     },
     "reddit": {
-        "url": "https://www.reddit.com/r/enteio/.rss",
+        "url": "https://old.reddit.com/r/enteio/.rss",
         "button_text": "View Post",
         "role_mention": "<@&1400571795848958052>",
         "forum_channel_id": 1400567228314943529,
@@ -328,56 +328,6 @@ class RSSFeedCog(commands.Cog):
 
         except Exception as e:
             logger.error(f"Failed to post {feed_name} thread: {e}")
-
-    @commands.command(name="testfeed")
-    @commands.has_permissions(manage_guild=True)
-    async def test_feed(self, ctx, feed_name: str = None):
-        """Test a specific feed or list all feeds (Admin only)"""
-        if feed_name is None:
-            embed = discord.Embed(title="Available RSS Feeds", color=0x1DB954)
-            for key, feed_cfg in FEEDS.items():
-                embed.add_field(
-                    name=f"{feed_cfg['emoji']} {feed_cfg['name']}",
-                    value=f"Type: {feed_cfg['type']}\nURL: {feed_cfg['url'][:50]}...",
-                    inline=False,
-                )
-            await ctx.send(embed=embed)
-            return
-
-        if feed_name not in FEEDS:
-            await ctx.send(
-                f"Feed '{feed_name}' not found. Available feeds: {', '.join(FEEDS.keys())}"
-            )
-            return
-
-        feed_cfg = FEEDS[feed_name]
-
-        embed = discord.Embed(
-            title=f"{feed_cfg['emoji']} Testing {feed_cfg['name']} Feed", color=0x1DB954
-        )
-        embed.add_field(name="URL", value=feed_cfg["url"], inline=False)
-        embed.add_field(name="Type", value=feed_cfg["type"], inline=True)
-        embed.add_field(name="Emoji", value=f"{feed_cfg['emoji']}", inline=True)
-
-        try:
-            d = await parse_feed_with_timeout(feed_cfg["url"])
-            if d and d.entries:
-                embed.add_field(name="Status", value="✅ Feed accessible", inline=False)
-                embed.add_field(
-                    name="Latest Entry",
-                    value=f"Link: {d.entries[0].link}",
-                    inline=False,
-                )
-            else:
-                embed.add_field(
-                    name="Status", value="❌ Feed not accessible or empty", inline=False
-                )
-        except Exception as e:
-            embed.add_field(
-                name="Status", value=f"❌ Error: {str(e)[:100]}", inline=False
-            )
-
-        await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
