@@ -63,7 +63,9 @@ FEEDS = {
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
         "type": "social",
-        "headers": {"User-Agent": "Ducky/1.0 (https://ente.io; brogio@ente.io)"},
+        "headers": {
+            "User-Agent": "EnteDiscordBot/1.0 (https://ente.io; contact@ente.io)"
+        },
     },
     "instagram": {
         "url": "https://rss.app/feeds/kSh7fh1j85tCyFEx.xml",
@@ -102,12 +104,14 @@ def load_state():
                 state["last_check"] = datetime.now().isoformat()
             return state
 
-    # Initialize state with current entries
+    # Initialize state with current entries (using synchronous parsing for initialization)
     state = {"last_check": datetime.now().isoformat()}
     for feed_key, feed_cfg in FEEDS.items():
         try:
-            d = await parse_feed_with_headers(feed_cfg["url"], feed_cfg.get("headers"))
-            if d and d.entries:
+            # For initialization, use basic feedparser without custom headers
+            # The headers will be used during the actual feed checking loop
+            d = feedparser.parse(feed_cfg["url"])
+            if d.entries:
                 entry = d.entries[0]
                 entry_id = getattr(entry, "id", getattr(entry, "link", None))
                 state[feed_cfg["url"]] = entry_id
