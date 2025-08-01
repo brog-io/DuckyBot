@@ -64,6 +64,16 @@ FEEDS = {
         "name": "Reddit",
         "type": "social",
     },
+    "instagram": {
+        "url": "https://rss.app/feeds/kSh7fh1j85tCyFEx.xml",
+        "button_text": "View Post",
+        "role_mention": "<@&1400779976222965962>",
+        "forum_channel_id": 1400567228314943529,
+        "tag_id": 1400780883698651136,
+        "emoji": "<:Instagram_Logo:1400780663614869504>",
+        "name": "Instagram",
+        "type": "social",
+    },
 }
 
 STATE_FILE = "ente_rss_state.json"
@@ -167,12 +177,26 @@ def get_thread_title_and_content(entry, feed_cfg: dict):
         if not title:
             title = "New Blog Post"
 
-        thread_title = f"{feed_cfg['emoji']} {title}"
+        thread_title = f"{title}"
         thread_content = f"📰 [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
     else:
-        # For social posts, use a simple format
-        thread_title = f"{feed_cfg['emoji']} New {feed_cfg['name']} Post"
-        thread_content = f"{feed_cfg['emoji']} [**New {feed_cfg['name']} Post**]({url}) **|** {feed_cfg['role_mention']}"
+        # For social posts, check if we have a meaningful title (especially for Reddit)
+        if feed_cfg["name"] == "Reddit":
+            # Reddit posts have meaningful titles, use them
+            title = get_first_str(getattr(entry, "title", None))
+            if title and title.strip():
+                # Clean up the title (remove extra whitespace)
+                title = title.strip()
+                thread_title = title
+                thread_content = f"{feed_cfg['emoji']} [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
+            else:
+                # Fallback to generic title if no title found
+                thread_title = f"New {feed_cfg['name']} Post"
+                thread_content = f"{feed_cfg['emoji']} [**New {feed_cfg['name']} Post**]({url}) **|** {feed_cfg['role_mention']}"
+        else:
+            # For other social media, use the generic format
+            thread_title = f"New {feed_cfg['name']} Post"
+            thread_content = f"{feed_cfg['emoji']} [**New {feed_cfg['name']} Post**]({url}) **|** {feed_cfg['role_mention']}"
 
     # Ensure thread title fits Discord's limits
     if len(thread_title) > 95:
