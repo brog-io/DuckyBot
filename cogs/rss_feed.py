@@ -63,9 +63,7 @@ FEEDS = {
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
         "type": "social",
-        "headers": {
-            "User-Agent": "EnteDiscordBot/1.0 (https://ente.io; contact@ente.io)"
-        },
+        "headers": {"User-Agent": "Ducky/1.0 (https://ente.io; brogio@ente.io)"},
     },
     "instagram": {
         "url": "https://rss.app/feeds/kSh7fh1j85tCyFEx.xml",
