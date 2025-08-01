@@ -45,7 +45,7 @@ FEEDS = {
         "type": "social",
     },
     "twitter": {
-        "url": "https://nitter.net/enteio/rss",
+        "url": "https://nitter.privacyredirect.com/enteio/rss",
         "button_text": "View Tweet",
         "role_mention": "<@&1400571684867543233>",
         "forum_channel_id": 1400567228314943529,
