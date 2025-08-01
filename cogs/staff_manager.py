@@ -1,9 +1,12 @@
 import discord
 from discord.ext import commands
 import logging
+import aiohttp
+import os
 
 STAFF_ROLE_IDS = [950276268593659925, 956466393514143814]
 TARGET_CHANNEL_ID = 1381183345626447944
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Get from environment variable
 NOTEPAD_EMOJI = "🗒️"
 
 logger = logging.getLogger(__name__)
@@ -33,7 +36,6 @@ class MessageNoteLogger(commands.Cog):
 
         channel = None
         thread_info = None
-
         channel = guild.get_channel(payload.channel_id)
 
         if not channel:
@@ -66,49 +68,74 @@ class MessageNoteLogger(commands.Cog):
         if message.author.bot:
             return
 
-        log_channel = guild.get_channel(TARGET_CHANNEL_ID)
-        if not log_channel:
-            logger.warning(f"Target log channel {TARGET_CHANNEL_ID} not found.")
+        # Check if webhook URL is configured
+        if not WEBHOOK_URL:
+            logger.error("WEBHOOK_URL environment variable not set")
             return
 
-        embed = discord.Embed(
-            description=message.content or "*[No content]*",
-            color=0xFFCD3F,
-            timestamp=message.created_at,
-        )
+        # Create embed data for webhook
+        embed_data = {
+            "description": message.content or "*[No content]*",
+            "color": 0xFFCD3F,
+            "timestamp": message.created_at.isoformat(),
+            "author": {
+                "name": message.author.display_name,
+                "icon_url": str(message.author.display_avatar.url),
+            },
+            "footer": {"text": f"User ID: {message.author.id}"},
+            "fields": [],
+        }
 
-        embed.set_author(
-            name=message.author.display_name,
-            icon_url=message.author.display_avatar.url,
-        )
-
+        # Add channel/thread info
         if thread_info and thread_info["is_forum_post"]:
-            embed.add_field(
-                name="Forum Thread",
-                value=f"{thread_info['parent'].mention} → **{thread_info['name']}**",
-                inline=False,
+            embed_data["fields"].append(
+                {
+                    "name": "Forum Thread",
+                    "value": f"{thread_info['parent'].mention} → **{thread_info['name']}**",
+                    "inline": False,
+                }
             )
         else:
-            embed.add_field(name="Channel", value=channel.mention, inline=False)
-
-        embed.set_footer(text=f"User ID: {message.author.id}")
-
-        if message.attachments:
-            embed.set_image(url=message.attachments[0].url)
-
-        view = discord.ui.View()
-        view.add_item(
-            discord.ui.Button(
-                label="Jump to Message",
-                url=message.jump_url,
-                style=discord.ButtonStyle.link,
+            embed_data["fields"].append(
+                {"name": "Channel", "value": channel.mention, "inline": False}
             )
-        )
+
+        # Add image if attachments exist
+        if message.attachments:
+            embed_data["image"] = {"url": message.attachments[0].url}
+
+        # Send via webhook
+        webhook_data = {
+            "embeds": [embed_data],
+            "username": "Message Logger",  # Optional: customize webhook appearance
+            "components": [
+                {
+                    "type": 1,  # Action Row
+                    "components": [
+                        {
+                            "type": 2,  # Button
+                            "style": 5,  # Link style
+                            "label": "Jump to Message",
+                            "url": message.jump_url,
+                        }
+                    ],
+                }
+            ],
+        }
 
         try:
-            await log_channel.send(embed=embed, view=view)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(WEBHOOK_URL, json=webhook_data) as response:
+                    if response.status != 204:
+                        logger.error(
+                            f"Webhook request failed with status {response.status}: {await response.text()}"
+                        )
+                    else:
+                        logger.info(
+                            f"Successfully logged message {message.id} via webhook"
+                        )
         except Exception as e:
-            logger.error(f"Failed to send log message: {e}")
+            logger.error(f"Failed to send webhook message: {e}")
 
 
 async def setup(bot):
