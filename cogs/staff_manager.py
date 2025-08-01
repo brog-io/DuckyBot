@@ -104,23 +104,19 @@ class MessageNoteLogger(commands.Cog):
         if message.attachments:
             embed_data["image"] = {"url": message.attachments[0].url}
 
+        # Add clickable link to view message
+        embed_data["fields"].append(
+            {
+                "name": "🔗 Message Link",
+                "value": f"**[Click here to view message]({message.jump_url})**",
+                "inline": False,
+            }
+        )
+
         # Send via webhook
         webhook_data = {
             "embeds": [embed_data],
             "username": "Message Logger",  # Optional: customize webhook appearance
-            "components": [
-                {
-                    "type": 1,  # Action Row
-                    "components": [
-                        {
-                            "type": 2,  # Button
-                            "style": 5,  # Link style
-                            "label": "Jump to Message",
-                            "url": message.jump_url,
-                        }
-                    ],
-                }
-            ],
         }
 
         try:
