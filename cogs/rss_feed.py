@@ -55,7 +55,7 @@ FEEDS = {
         "type": "social",
     },
     "reddit": {
-        "url": "https://rss.app/feeds/rhVQPxajVEjW09UY.xml",
+        "url": "https://www.reddit.com/r/enteio/.rss",
         "button_text": "View Post",
         "role_mention": "<@&1400571795848958052>",
         "forum_channel_id": 1400567228314943529,
@@ -63,6 +63,7 @@ FEEDS = {
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
         "type": "social",
+        "headers": {"User-Agent": "Ducky/1.0 (https://ente.io; brogio@ente.io)"},
     },
     "instagram": {
         "url": "https://rss.app/feeds/kSh7fh1j85tCyFEx.xml",
@@ -105,8 +106,8 @@ def load_state():
     state = {"last_check": datetime.now().isoformat()}
     for feed_key, feed_cfg in FEEDS.items():
         try:
-            d = feedparser.parse(feed_cfg["url"])
-            if d.entries:
+            d = await parse_feed_with_headers(feed_cfg["url"], feed_cfg.get("headers"))
+            if d and d.entries:
                 entry = d.entries[0]
                 entry_id = getattr(entry, "id", getattr(entry, "link", None))
                 state[feed_cfg["url"]] = entry_id
@@ -149,6 +150,52 @@ class LinkButton(discord.ui.View):
         self.add_item(
             discord.ui.Button(label=label, url=url, style=discord.ButtonStyle.link)
         )
+
+
+async def fetch_rss_with_headers(
+    url: str, headers: dict = None, timeout: int = FEED_TIMEOUT
+):
+    """Fetch RSS content with custom headers using aiohttp"""
+    try:
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    return content
+                else:
+                    logger.error(f"HTTP {response.status} for {url}")
+                    return None
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout ({timeout}s) fetching RSS: {url}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching RSS {url}: {e}")
+        return None
+
+
+async def parse_feed_with_headers(
+    url: str, headers: dict = None, timeout: int = FEED_TIMEOUT
+):
+    """Parse RSS feed with optional custom headers"""
+    try:
+        if headers:
+            # Use aiohttp to fetch with headers, then parse with feedparser
+            content = await fetch_rss_with_headers(url, headers, timeout)
+            if content:
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor() as executor:
+                    return await asyncio.wait_for(
+                        loop.run_in_executor(executor, feedparser.parse, content),
+                        timeout=timeout,
+                    )
+            return None
+        else:
+            # Use the original method for feeds without custom headers
+            return await parse_feed_with_timeout(url, timeout)
+    except Exception as e:
+        logger.error(f"Error parsing feed {url}: {e}")
+        return None
 
 
 async def parse_feed_with_timeout(url: str, timeout: int = FEED_TIMEOUT):
@@ -221,7 +268,10 @@ class RSSFeedCog(commands.Cog):
 
         for feed_key, feed_cfg in FEEDS.items():
             try:
-                d = await parse_feed_with_timeout(feed_cfg["url"])
+                # Use the new header-aware parsing function
+                d = await parse_feed_with_headers(
+                    feed_cfg["url"], feed_cfg.get("headers")
+                )
                 if d and d.entries:
                     latest = d.entries[0]
                     entry_id = getattr(latest, "id", getattr(latest, "link", None))
@@ -256,7 +306,7 @@ class RSSFeedCog(commands.Cog):
 
                                 # Safety: Don't post old entries
                                 if is_entry_too_old(entry):
-                                    logger.info(f"Skipping old {feed_key} entry")
+                                    logger.debug(f"Skipping old {feed_key} entry")
                                     continue
 
                                 new_entries.append(entry)
