@@ -614,9 +614,6 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
             not isinstance(thread.parent, discord.ForumChannel)
             or thread.parent.id != self.forum_channel_id
         ):
-            logger.error(
-                f"Wrong channel or not forum. Expected: {self.forum_channel_id}"
-            )
             return
 
         await asyncio.sleep(2)
