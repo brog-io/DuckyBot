@@ -66,7 +66,7 @@ class MessageNoteLogger(commands.Cog):
         if message.author.bot:
             return
 
-        log_channel = self.get_channel(TARGET_CHANNEL_ID)
+        log_channel = self.bot.get_channel(TARGET_CHANNEL_ID)
         if not log_channel:
             logger.warning(f"Target log channel {TARGET_CHANNEL_ID} not found.")
             return
