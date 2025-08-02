@@ -8,7 +8,7 @@ from dateutil import parser as dateparser
 import aiohttp
 import logging
 from html import unescape
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
@@ -90,7 +90,12 @@ def get_entry_date(entry):
         date_str = getattr(entry, date_field, None)
         if date_str:
             try:
-                return dateparser.parse(date_str)
+                parsed_date = dateparser.parse(date_str)
+                # Ensure the datetime is timezone-aware
+                if parsed_date.tzinfo is None:
+                    # If naive, assume UTC
+                    parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+                return parsed_date
             except Exception:
                 continue
     return None
@@ -111,7 +116,7 @@ def load_state():
             state = json.load(f)
             # Ensure we have a last_check timestamp
             if "last_check" not in state:
-                state["last_check"] = datetime.now().isoformat()
+                state["last_check"] = datetime.now(timezone.utc).isoformat()
 
             # Migrate from old ID-based system to date-based system
             for feed_key, feed_cfg in FEEDS.items():
@@ -119,17 +124,17 @@ def load_state():
                 if (
                     feed_url not in state
                     or not isinstance(state[feed_url], str)
-                    or not state[feed_url].endswith("Z")
+                    or not state[feed_url].endswith(("Z", "+00:00"))
                 ):
                     # Initialize with current time to avoid re-posting old content
-                    state[feed_url] = datetime.now().isoformat()
+                    state[feed_url] = datetime.now(timezone.utc).isoformat()
                     logger.info(f"Initialized {feed_key} last check time")
 
             return state
 
     # Initialize state with current time for all feeds
-    state = {"last_check": datetime.now().isoformat()}
-    current_time = datetime.now().isoformat()
+    state = {"last_check": datetime.now(timezone.utc).isoformat()}
+    current_time = datetime.now(timezone.utc).isoformat()
 
     for feed_key, feed_cfg in FEEDS.items():
         state[feed_cfg["url"]] = current_time
@@ -140,7 +145,7 @@ def load_state():
 
 
 def save_state(state):
-    state["last_check"] = datetime.now().isoformat()
+    state["last_check"] = datetime.now(timezone.utc).isoformat()
     try:
         # Create backup of existing state
         if os.path.exists(STATE_FILE):
@@ -172,7 +177,15 @@ def is_entry_too_old(entry, max_hours=MAX_AGE_HOURS):
         return False
 
     try:
-        cutoff = datetime.now(entry_date.tzinfo) - timedelta(hours=max_hours)
+        # Ensure we're comparing timezone-aware datetimes
+        now = datetime.now(timezone.utc)
+        if entry_date.tzinfo is None:
+            entry_date = entry_date.replace(tzinfo=timezone.utc)
+        elif entry_date.tzinfo != timezone.utc:
+            # Convert to UTC for comparison
+            entry_date = entry_date.astimezone(timezone.utc)
+
+        cutoff = now - timedelta(hours=max_hours)
         return entry_date < cutoff
     except Exception:
         pass
@@ -308,12 +321,15 @@ class RSSFeedCog(commands.Cog):
                     if last_check_str:
                         try:
                             last_check = dateparser.parse(last_check_str)
+                            # Ensure timezone-aware
+                            if last_check.tzinfo is None:
+                                last_check = last_check.replace(tzinfo=timezone.utc)
                         except Exception:
                             # If we can't parse the stored time, use an hour ago as fallback
-                            last_check = datetime.now() - timedelta(hours=1)
+                            last_check = datetime.now(timezone.utc) - timedelta(hours=1)
                     else:
                         # If no last check time, use an hour ago to avoid spam
-                        last_check = datetime.now() - timedelta(hours=1)
+                        last_check = datetime.now(timezone.utc) - timedelta(hours=1)
 
                     new_entries = []
                     latest_entry_date = None
@@ -346,7 +362,22 @@ class RSSFeedCog(commands.Cog):
                                 latest_entry_date = entry_date
 
                             # Skip entries older than our last check
-                            if entry_date <= last_check:
+                            # Ensure both datetimes are timezone-aware for comparison
+                            if entry_date.tzinfo is None:
+                                entry_date_aware = entry_date.replace(
+                                    tzinfo=timezone.utc
+                                )
+                            else:
+                                entry_date_aware = entry_date
+
+                            if last_check.tzinfo is None:
+                                last_check_aware = last_check.replace(
+                                    tzinfo=timezone.utc
+                                )
+                            else:
+                                last_check_aware = last_check
+
+                            if entry_date_aware <= last_check_aware:
                                 continue
 
                             # Safety: Don't post old entries (older than MAX_AGE_HOURS)
@@ -394,11 +425,15 @@ class RSSFeedCog(commands.Cog):
 
                     # Update the last check time to the latest entry date or current time
                     if latest_entry_date:
-                        # Use the latest entry date we saw
+                        # Use the latest entry date we saw, ensure it's timezone-aware
+                        if latest_entry_date.tzinfo is None:
+                            latest_entry_date = latest_entry_date.replace(
+                                tzinfo=timezone.utc
+                            )
                         new_last_check = latest_entry_date.isoformat()
                     else:
                         # If no entries had dates, just use current time
-                        new_last_check = datetime.now().isoformat()
+                        new_last_check = datetime.now(timezone.utc).isoformat()
 
                     if new_last_check != self.state.get(feed_cfg["url"]):
                         self.state[feed_cfg["url"]] = new_last_check
