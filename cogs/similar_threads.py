@@ -6,7 +6,7 @@ import openai
 import numpy as np
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone  # ADD: Import timezone
 import time
 from typing import List, Dict, Optional, Tuple
 
@@ -51,6 +51,25 @@ class ForumSimilarityBot(commands.Cog):
         self.check_new_solved_posts.start()
         self.refresh_old_embeddings.start()
 
+    # HELPER METHOD: Get timezone-aware datetime
+    def _now_utc(self):
+        """Get current UTC datetime with timezone info"""
+        return datetime.now(timezone.utc)
+
+    # HELPER METHOD: Parse datetime with timezone handling
+    def _parse_datetime_safe(
+        self, dt_string: str, default: str = "2020-01-01T00:00:00+00:00"
+    ):
+        """Parse datetime string and ensure it's timezone-aware"""
+        try:
+            dt = datetime.fromisoformat(dt_string)
+            # If naive, assume UTC
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError):
+            return datetime.fromisoformat(default)
+
     def load_solved_posts(self):
         try:
             with open(self.solved_posts_file, "r") as f:
@@ -68,14 +87,14 @@ class ForumSimilarityBot(commands.Cog):
 
     def preload_embeddings(self, posts_data):
         """Load frequently used embeddings into memory"""
-        recent_cutoff = datetime.now() - timedelta(days=7)
+        recent_cutoff = self._now_utc() - timedelta(days=7)
         for post_id, post_data in posts_data.items():
-            if (
-                post_data.get("embedding")
-                and datetime.fromisoformat(post_data.get("indexed_at", "2020-01-01"))
-                > recent_cutoff
-            ):
-                self.embedding_cache[post_id] = np.array(post_data["embedding"])
+            if post_data.get("embedding"):
+                indexed_at = self._parse_datetime_safe(
+                    post_data.get("indexed_at", "2020-01-01T00:00:00+00:00")
+                )
+                if indexed_at > recent_cutoff:
+                    self.embedding_cache[post_id] = np.array(post_data["embedding"])
 
     async def save_solved_posts(self):
         """Thread-safe save with duplicate prevention"""
@@ -208,14 +227,15 @@ class ForumSimilarityBot(commands.Cog):
 
             # Check archived threads (limited batch) - prioritize recent ones
             count = 0
-            cutoff_date = datetime.now() - timedelta(
+            # FIX: Use timezone-aware datetime
+            cutoff_date = self._now_utc() - timedelta(
                 days=30
             )  # Only check recent archived threads
             async for thread in forum_channel.archived_threads(limit=100):
                 if count >= 50:
                     break
 
-                # Skip very old archived threads to avoid API issues
+                # FIX: Safe datetime comparison - thread.created_at is timezone-aware
                 if thread.created_at < cutoff_date:
                     continue
 
@@ -259,12 +279,12 @@ class ForumSimilarityBot(commands.Cog):
         """Refresh embeddings older than cache duration"""
         await self.bot.wait_until_ready()
 
-        cutoff_date = datetime.now() - timedelta(days=self.cache_duration_days)
+        cutoff_date = self._now_utc() - timedelta(days=self.cache_duration_days)
         old_posts = []
 
         for post_id, post_data in self.solved_posts.items():
-            indexed_date = datetime.fromisoformat(
-                post_data.get("indexed_at", "2020-01-01")
+            indexed_date = self._parse_datetime_safe(
+                post_data.get("indexed_at", "2020-01-01T00:00:00+00:00")
             )
             if (
                 indexed_date < cutoff_date
@@ -390,8 +410,9 @@ class ForumSimilarityBot(commands.Cog):
                         "author_id": (
                             starter_message.author.id if starter_message else None
                         ),
+                        # FIX: Store datetime as ISO string with timezone
                         "created_at": thread.created_at.isoformat(),
-                        "indexed_at": datetime.now().isoformat(),
+                        "indexed_at": self._now_utc().isoformat(),
                         "url": thread.jump_url,
                         "embedding": embeddings[i],
                         "embedding_version": self.embedding_version,
@@ -433,7 +454,7 @@ class ForumSimilarityBot(commands.Cog):
             if i < len(embeddings) and embeddings[i]:
                 self.solved_posts[post_id]["embedding"] = embeddings[i]
                 self.solved_posts[post_id]["embedding_version"] = self.embedding_version
-                self.solved_posts[post_id]["refreshed_at"] = datetime.now().isoformat()
+                self.solved_posts[post_id]["refreshed_at"] = self._now_utc().isoformat()
 
                 # Update cache
                 self.embedding_cache[post_id] = np.array(embeddings[i])

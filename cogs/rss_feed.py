@@ -75,14 +75,14 @@ FEEDS = {
         "name": "Instagram",
         "type": "social",
     },
-    "instagram": {
+    "theads": {
         "url": "https://rss.app/feeds/KLQWdv7w7ukehTax.xml",
         "button_text": "View Post",
         "role_mention": "<@&1400779976222965962>",
         "forum_channel_id": 1400567228314943529,
         "tag_id": 1400780883698651136,
         "emoji": "<:Instagram_Logo:1400780663614869504>",
-        "name": "Instagram",
+        "name": "Threads",
         "type": "social",
     },
 }
