@@ -80,7 +80,7 @@ FEEDS = {
 STATE_FILE = "ente_rss_state.json"
 
 # SAFETY LIMITS
-MAX_AGE_HOURS = 24  # Don't post items older than 24 hours
+MAX_AGE_HOURS = 3  # Don't post items older than 3 hours
 FEED_TIMEOUT = 60  # Timeout for feed parsing in seconds
 
 
