@@ -88,6 +88,7 @@ FEEDS = {
 }
 
 STATE_FILE = "ente_rss_state.json"
+RECENT_POSTS_LIMIT = 5  # Number of recent posts to track per feed
 
 # SAFETY LIMITS
 MAX_AGE_HOURS = 3  # Don't post items older than 3 hours
@@ -111,6 +112,11 @@ def get_entry_date(entry):
     return None
 
 
+def get_post_identifier(entry):
+    """Get a unique identifier for a post (using URL)"""
+    return getattr(entry, "link", None) or getattr(entry, "id", None)
+
+
 def get_first_str(val):
     if isinstance(val, list) and val:
         item = val[0]
@@ -128,6 +134,10 @@ def load_state():
             if "last_check" not in state:
                 state["last_check"] = datetime.now(timezone.utc).isoformat()
 
+            # Ensure we have a recent_posts structure
+            if "recent_posts" not in state:
+                state["recent_posts"] = {}
+
             # Migrate from old ID-based system to date-based system
             for feed_key, feed_cfg in FEEDS.items():
                 feed_url = feed_cfg["url"]
@@ -140,14 +150,20 @@ def load_state():
                     state[feed_url] = datetime.now(timezone.utc).isoformat()
                     logger.info(f"Initialized {feed_key} last check time")
 
+                # Initialize recent_posts for this feed if not exists
+                if feed_url not in state["recent_posts"]:
+                    state["recent_posts"][feed_url] = []
+                    logger.info(f"Initialized {feed_key} recent posts tracking")
+
             return state
 
     # Initialize state with current time for all feeds
-    state = {"last_check": datetime.now(timezone.utc).isoformat()}
+    state = {"last_check": datetime.now(timezone.utc).isoformat(), "recent_posts": {}}
     current_time = datetime.now(timezone.utc).isoformat()
 
     for feed_key, feed_cfg in FEEDS.items():
         state[feed_cfg["url"]] = current_time
+        state["recent_posts"][feed_cfg["url"]] = []
         logger.info(f"Initialized {feed_key} with current time")
 
     save_state(state)
@@ -178,6 +194,42 @@ def save_state(state):
 
             shutil.copy2(backup_file, STATE_FILE)
             logger.info("Restored state from backup")
+
+
+def is_post_recently_posted(state, feed_url, post_identifier):
+    """Check if a post was recently posted"""
+    if not post_identifier:
+        return False
+
+    recent_posts = state.get("recent_posts", {}).get(feed_url, [])
+    return post_identifier in recent_posts
+
+
+def add_post_to_recent(state, feed_url, post_identifier):
+    """Add a post identifier to the recent posts list, maintaining the limit"""
+    if not post_identifier:
+        return
+
+    if "recent_posts" not in state:
+        state["recent_posts"] = {}
+
+    if feed_url not in state["recent_posts"]:
+        state["recent_posts"][feed_url] = []
+
+    recent_posts = state["recent_posts"][feed_url]
+
+    # Remove if already exists (to avoid duplicates)
+    if post_identifier in recent_posts:
+        recent_posts.remove(post_identifier)
+
+    # Add to the beginning of the list
+    recent_posts.insert(0, post_identifier)
+
+    # Keep only the last N posts
+    if len(recent_posts) > RECENT_POSTS_LIMIT:
+        recent_posts[:] = recent_posts[:RECENT_POSTS_LIMIT]
+
+    logger.debug(f"Added post to recent list for {feed_url}: {post_identifier}")
 
 
 def is_entry_too_old(entry, max_hours=MAX_AGE_HOURS):
@@ -353,10 +405,26 @@ class RSSFeedCog(commands.Cog):
                     for i, entry in enumerate(d.entries):
                         try:
                             entry_date = get_entry_date(entry)
+                            post_identifier = get_post_identifier(entry)
 
                             if not entry_date:
                                 logger.warning(
                                     f"Skipping {feed_key} entry {i} - no valid date"
+                                )
+                                continue
+
+                            if not post_identifier:
+                                logger.warning(
+                                    f"Skipping {feed_key} entry {i} - no valid identifier"
+                                )
+                                continue
+
+                            # Check if this post was recently posted (duplicate prevention)
+                            if is_post_recently_posted(
+                                self.state, feed_cfg["url"], post_identifier
+                            ):
+                                logger.debug(
+                                    f"Skipping {feed_key} entry {i} - recently posted duplicate"
                                 )
                                 continue
 
@@ -425,9 +493,16 @@ class RSSFeedCog(commands.Cog):
                             )
 
                             for entry in new_entries:
-                                await self.send_forum_post(
+                                success = await self.send_forum_post(
                                     forum_channel, entry, feed_cfg, feed_key
                                 )
+                                # Only add to recent posts if successfully posted
+                                if success:
+                                    post_identifier = get_post_identifier(entry)
+                                    add_post_to_recent(
+                                        self.state, feed_cfg["url"], post_identifier
+                                    )
+                                    changed = True
                         else:
                             logger.error(
                                 f"{feed_key} forum channel not found: {feed_cfg['forum_channel_id']}"
@@ -466,7 +541,7 @@ class RSSFeedCog(commands.Cog):
     ):
         """Send a post to a forum channel - simplified unified method"""
         if not forum_channel or not isinstance(forum_channel, discord.ForumChannel):
-            return
+            return False
 
         thread_title, thread_content = get_thread_title_and_content(entry, feed_cfg)
         url = entry.link
@@ -502,9 +577,11 @@ class RSSFeedCog(commands.Cog):
             # Create the thread
             thread = await forum_channel.create_thread(**thread_args)
             logger.info(f"Posted {feed_name}: {thread_title}")
+            return True
 
         except Exception as e:
             logger.error(f"Failed to post {feed_name} thread: {e}")
+            return False
 
 
 async def setup(bot: commands.Bot):
