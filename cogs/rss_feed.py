@@ -45,7 +45,7 @@ FEEDS = {
         "type": "social",
     },
     "twitter": {
-        "url": "https://rss.app/feeds/6KKkSyJY69IyUDD8.xml",
+        "url": "https://rss.app/feeds/XeEvnoeAyKtPJZCf.xml",
         "button_text": "View Tweet",
         "role_mention": "<@&1400571684867543233>",
         "forum_channel_id": 1400567228314943529,
