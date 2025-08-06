@@ -35,6 +35,8 @@ class DocSearch(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+        self.COMMUNITY_GUILD_ID = 948937918347608085
+
         self.SELFHOSTING_CHANNEL_ID = 1383504546361380995
         self.INTROS_CHANNEL_ID = 1380262760994177135
 
@@ -86,6 +88,10 @@ class DocSearch(commands.Cog):
             "If you have a question about selfhosting Ente, please check out <#{}>"
         ).format(self.SELFHOSTING_CHANNEL_ID)
 
+    def is_community_server(self, guild_id: int) -> bool:
+        """Check if the message/interaction is from the community server."""
+        return guild_id == self.COMMUNITY_GUILD_ID
+
     def is_in_exempt_channel(self, message: discord.Message) -> bool:
         """Check if message is in a channel where selfhosting redirects should not appear."""
         channel_id = message.channel.id
@@ -104,6 +110,10 @@ class DocSearch(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
+            return
+
+        # Only process messages from the community server
+        if not self.is_community_server(message.guild.id):
             return
 
         content = message.content.lower()
