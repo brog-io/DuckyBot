@@ -3,14 +3,11 @@ from discord.ext import commands, tasks
 import feedparser
 import os
 import json
-import re
 from dateutil import parser as dateparser
 import aiohttp
 import logging
-from html import unescape
 from datetime import datetime, timedelta, timezone
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +72,7 @@ FEEDS = {
         "name": "Instagram",
         "type": "social",
     },
-    "theads": {
+    "threads": {
         "url": "https://rss.app/feeds/KLQWdv7w7ukehTax.xml",
         "button_text": "View Post",
         "role_mention": "<@&1400779976222965962>",
@@ -88,23 +85,19 @@ FEEDS = {
 }
 
 STATE_FILE = "ente_rss_state.json"
-RECENT_POSTS_LIMIT = 5  # Number of recent posts to track per feed
-
-# SAFETY LIMITS
-MAX_AGE_HOURS = 3  # Don't post items older than 3 hours
-FEED_TIMEOUT = 60  # Timeout for feed parsing in seconds
+RECENT_POSTS_LIMIT = 5
+MAX_AGE_HOURS = 72
+FEED_TIMEOUT = 60
 
 
 def get_entry_date(entry):
-    """Extract publication date from entry, trying multiple fields"""
+    """Extract publication date from entry"""
     for date_field in ["published", "updated", "created"]:
         date_str = getattr(entry, date_field, None)
         if date_str:
             try:
                 parsed_date = dateparser.parse(date_str)
-                # Ensure the datetime is timezone-aware
                 if parsed_date.tzinfo is None:
-                    # If naive, assume UTC
                     parsed_date = parsed_date.replace(tzinfo=timezone.utc)
                 return parsed_date
             except Exception:
@@ -113,11 +106,12 @@ def get_entry_date(entry):
 
 
 def get_post_identifier(entry):
-    """Get a unique identifier for a post (using URL)"""
+    """Get unique identifier for a post"""
     return getattr(entry, "link", None) or getattr(entry, "id", None)
 
 
 def get_first_str(val):
+    """Extract string value from various feedparser structures"""
     if isinstance(val, list) and val:
         item = val[0]
         if isinstance(item, dict) and "value" in item:
@@ -126,54 +120,104 @@ def get_first_str(val):
     return val
 
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            state = json.load(f)
-            # Ensure we have a last_check timestamp
-            if "last_check" not in state:
-                state["last_check"] = datetime.now(timezone.utc).isoformat()
+def create_clean_state():
+    """Create a clean state structure"""
+    now = datetime.now(timezone.utc)
+    start_time = (now - timedelta(hours=24)).isoformat()
 
-            # Ensure we have a recent_posts structure
-            if "recent_posts" not in state:
-                state["recent_posts"] = {}
-
-            # Migrate from old ID-based system to date-based system
-            for feed_key, feed_cfg in FEEDS.items():
-                feed_url = feed_cfg["url"]
-                if (
-                    feed_url not in state
-                    or not isinstance(state[feed_url], str)
-                    or not state[feed_url].endswith(("Z", "+00:00"))
-                ):
-                    # Initialize with current time to avoid re-posting old content
-                    state[feed_url] = datetime.now(timezone.utc).isoformat()
-                    logger.info(f"Initialized {feed_key} last check time")
-
-                # Initialize recent_posts for this feed if not exists
-                if feed_url not in state["recent_posts"]:
-                    state["recent_posts"][feed_url] = []
-                    logger.info(f"Initialized {feed_key} recent posts tracking")
-
-            return state
-
-    # Initialize state with current time for all feeds
-    state = {"last_check": datetime.now(timezone.utc).isoformat(), "recent_posts": {}}
-    current_time = datetime.now(timezone.utc).isoformat()
+    state = {"last_updated": now.isoformat(), "feeds": {}, "recent_posts": {}}
 
     for feed_key, feed_cfg in FEEDS.items():
-        state[feed_cfg["url"]] = current_time
-        state["recent_posts"][feed_cfg["url"]] = []
-        logger.info(f"Initialized {feed_key} with current time")
+        url = feed_cfg["url"]
+        state["feeds"][url] = {"name": feed_key, "last_check": start_time}
+        state["recent_posts"][url] = []
 
-    save_state(state)
     return state
 
 
-def save_state(state):
-    state["last_check"] = datetime.now(timezone.utc).isoformat()
+def load_state():
+    """Load and migrate state file"""
+    if not os.path.exists(STATE_FILE):
+        logger.info("Creating new state file")
+        return create_clean_state()
+
     try:
-        # Create backup of existing state
+        with open(STATE_FILE, "r") as f:
+            old_state = json.load(f)
+
+        # Check if we need to migrate from old format
+        if "feeds" not in old_state:
+            logger.info("Migrating state to new format")
+            state = create_clean_state()
+
+            # Migrate existing data
+            for feed_key, feed_cfg in FEEDS.items():
+                url = feed_cfg["url"]
+                if url in old_state:
+                    # Only migrate if it's a valid timestamp
+                    old_value = old_state[url]
+                    if isinstance(old_value, str) and (
+                        "T" in old_value or "Z" in old_value
+                    ):
+                        try:
+                            # Validate it's a proper timestamp
+                            dateparser.parse(old_value)
+                            state["feeds"][url]["last_check"] = old_value
+                            logger.info(f"Migrated {feed_key} timestamp: {old_value}")
+                        except Exception:
+                            logger.warning(
+                                f"Invalid timestamp for {feed_key}, using default"
+                            )
+
+                # Migrate recent posts
+                if "recent_posts" in old_state and url in old_state["recent_posts"]:
+                    state["recent_posts"][url] = old_state["recent_posts"][url][
+                        :RECENT_POSTS_LIMIT
+                    ]
+                    logger.info(
+                        f"Migrated {len(state['recent_posts'][url])} recent posts for {feed_key}"
+                    )
+
+            # Clean up old state file
+            backup_file = f"{STATE_FILE}.old_backup"
+            with open(backup_file, "w") as f:
+                json.dump(old_state, f, indent=2)
+            logger.info(f"Backed up old state to {backup_file}")
+
+            save_state(state)
+            return state
+        else:
+            # New format, just validate and clean
+            state = old_state
+            state["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+            # Ensure all current feeds exist
+            for feed_key, feed_cfg in FEEDS.items():
+                url = feed_cfg["url"]
+                if url not in state["feeds"]:
+                    state["feeds"][url] = {
+                        "name": feed_key,
+                        "last_check": (
+                            datetime.now(timezone.utc) - timedelta(hours=24)
+                        ).isoformat(),
+                    }
+                if url not in state["recent_posts"]:
+                    state["recent_posts"][url] = []
+
+            return state
+
+    except Exception as e:
+        logger.error(f"Error loading state: {e}")
+        logger.info("Creating new state due to error")
+        return create_clean_state()
+
+
+def save_state(state):
+    """Save state with backup"""
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        # Create backup
         if os.path.exists(STATE_FILE):
             backup_file = f"{STATE_FILE}.backup"
             import shutil
@@ -184,75 +228,58 @@ def save_state(state):
         with open(STATE_FILE, "w") as f:
             json.dump(state, f, indent=2)
 
-        logger.debug(f"State saved successfully at {state['last_check']}")
+        logger.debug("State saved successfully")
+
     except Exception as e:
         logger.error(f"Failed to save state: {e}")
-        # Try to restore backup if save failed
+        # Restore backup if save failed
         backup_file = f"{STATE_FILE}.backup"
         if os.path.exists(backup_file):
             import shutil
 
             shutil.copy2(backup_file, STATE_FILE)
-            logger.info("Restored state from backup")
+            logger.info("Restored from backup")
 
 
-def is_post_recently_posted(state, feed_url, post_identifier):
-    """Check if a post was recently posted"""
-    if not post_identifier:
+def is_post_recent(state, feed_url, post_id):
+    """Check if post was recently posted"""
+    if not post_id:
         return False
-
-    recent_posts = state.get("recent_posts", {}).get(feed_url, [])
-    return post_identifier in recent_posts
+    return post_id in state["recent_posts"].get(feed_url, [])
 
 
-def add_post_to_recent(state, feed_url, post_identifier):
-    """Add a post identifier to the recent posts list, maintaining the limit"""
-    if not post_identifier:
+def add_recent_post(state, feed_url, post_id):
+    """Add post to recent posts list"""
+    if not post_id:
         return
 
-    if "recent_posts" not in state:
-        state["recent_posts"] = {}
+    recent = state["recent_posts"].setdefault(feed_url, [])
 
-    if feed_url not in state["recent_posts"]:
-        state["recent_posts"][feed_url] = []
+    if post_id in recent:
+        recent.remove(post_id)
 
-    recent_posts = state["recent_posts"][feed_url]
+    recent.insert(0, post_id)
 
-    # Remove if already exists (to avoid duplicates)
-    if post_identifier in recent_posts:
-        recent_posts.remove(post_identifier)
-
-    # Add to the beginning of the list
-    recent_posts.insert(0, post_identifier)
-
-    # Keep only the last N posts
-    if len(recent_posts) > RECENT_POSTS_LIMIT:
-        recent_posts[:] = recent_posts[:RECENT_POSTS_LIMIT]
-
-    logger.debug(f"Added post to recent list for {feed_url}: {post_identifier}")
+    if len(recent) > RECENT_POSTS_LIMIT:
+        recent[:] = recent[:RECENT_POSTS_LIMIT]
 
 
-def is_entry_too_old(entry, max_hours=MAX_AGE_HOURS):
-    """Check if entry is older than max_hours"""
+def is_entry_too_old(entry):
+    """Check if entry is too old to post"""
     entry_date = get_entry_date(entry)
     if not entry_date:
         return False
 
     try:
-        # Ensure we're comparing timezone-aware datetimes
-        now = datetime.now(timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
         if entry_date.tzinfo is None:
             entry_date = entry_date.replace(tzinfo=timezone.utc)
         elif entry_date.tzinfo != timezone.utc:
-            # Convert to UTC for comparison
             entry_date = entry_date.astimezone(timezone.utc)
 
-        cutoff = now - timedelta(hours=max_hours)
         return entry_date < cutoff
     except Exception:
-        pass
-
-    return False
+        return False
 
 
 class LinkButton(discord.ui.View):
@@ -263,95 +290,63 @@ class LinkButton(discord.ui.View):
         )
 
 
-async def fetch_rss_with_headers(
-    url: str, headers: dict = None, timeout: int = FEED_TIMEOUT
-):
-    """Fetch RSS content with custom headers using aiohttp"""
+async def fetch_feed_content(url: str, headers: dict = None):
+    """Fetch RSS feed content"""
     try:
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+        timeout = aiohttp.ClientTimeout(total=FEED_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:
-                    content = await response.text()
-                    return content
+                    return await response.text()
                 else:
                     logger.error(f"HTTP {response.status} for {url}")
                     return None
     except asyncio.TimeoutError:
-        logger.error(f"Timeout ({timeout}s) fetching RSS: {url}")
+        logger.error(f"Timeout fetching {url}")
         return None
     except Exception as e:
-        logger.error(f"Error fetching RSS {url}: {e}")
+        logger.error(f"Error fetching {url}: {e}")
         return None
 
 
-async def parse_feed_with_headers(
-    url: str, headers: dict = None, timeout: int = FEED_TIMEOUT
-):
-    """Parse RSS feed with optional custom headers"""
+async def parse_feed(url: str, headers: dict = None):
+    """Parse RSS feed"""
     try:
         if headers:
-            # Use aiohttp to fetch with headers, then parse with feedparser
-            content = await fetch_rss_with_headers(url, headers, timeout)
+            content = await fetch_feed_content(url, headers)
             if content:
-                # Parse the content directly without threading for simplicity
                 return feedparser.parse(content)
             return None
         else:
-            # Use the original method for feeds without custom headers
-            return await parse_feed_with_timeout(url, timeout)
-    except Exception as e:
-        logger.error(f"Error parsing feed {url}: {e}")
-        return None
-
-
-async def parse_feed_with_timeout(url: str, timeout: int = FEED_TIMEOUT):
-    """Parse RSS feed with timeout to prevent blocking the event loop"""
-    try:
-        # Use asyncio.to_thread for better async compatibility (Python 3.9+)
-        return await asyncio.wait_for(
-            asyncio.to_thread(feedparser.parse, url), timeout=timeout
-        )
+            return await asyncio.wait_for(
+                asyncio.to_thread(feedparser.parse, url), timeout=FEED_TIMEOUT
+            )
     except asyncio.TimeoutError:
-        logger.error(f"Timeout ({timeout}s) parsing feed: {url}")
+        logger.error(f"Timeout parsing {url}")
         return None
     except Exception as e:
-        logger.error(f"Error parsing feed {url}: {e}")
+        logger.error(f"Error parsing {url}: {e}")
         return None
 
 
-def get_thread_title_and_content(entry, feed_cfg: dict):
-    """Get thread title and content for the post"""
+def create_thread_content(entry, feed_cfg):
+    """Create thread title and content"""
     url = entry.link
+    title = get_first_str(getattr(entry, "title", ""))
 
     if feed_cfg["type"] == "blog":
-        # For blog posts, try to get the actual title
-        title = get_first_str(getattr(entry, "title", None))
-        if not title:
-            title = "New Blog Post"
-
-        thread_title = f"{title}"
-        thread_content = f"📰 [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
+        thread_title = title or "New Blog Post"
+        thread_content = (
+            f"📰 [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
+        )
+    elif feed_cfg["name"] == "Reddit" and title:
+        thread_title = title.strip()
+        thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
     else:
-        # For social posts, check if we have a meaningful title (especially for Reddit)
-        if feed_cfg["name"] == "Reddit":
-            # Reddit posts have meaningful titles, use them
-            title = get_first_str(getattr(entry, "title", None))
-            if title and title.strip():
-                # Clean up the title (remove extra whitespace)
-                title = title.strip()
-                thread_title = title
-                thread_content = f"{feed_cfg['emoji']} [**{title}**]({url}) **|** {feed_cfg['role_mention']}"
-            else:
-                # Fallback to generic title if no title found
-                thread_title = f"New {feed_cfg['name']} Post"
-                thread_content = f"{feed_cfg['emoji']} [**New {feed_cfg['name']} Post**]({url}) **|** {feed_cfg['role_mention']}"
-        else:
-            # For other social media, use the generic format
-            thread_title = f"New {feed_cfg['name']} Post"
-            thread_content = f"{feed_cfg['emoji']} [**New {feed_cfg['name']} Post**]({url}) **|** {feed_cfg['role_mention']}"
+        thread_title = f"New {feed_cfg['name']} Post"
+        thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
 
-    # Ensure thread title fits Discord's limits
+    # Ensure title fits Discord limits
     if len(thread_title) > 95:
         thread_title = thread_title[:92] + "..."
 
@@ -372,182 +367,129 @@ class RSSFeedCog(commands.Cog):
         await self.bot.wait_until_ready()
         changed = False
 
+        logger.info("Starting feed check")
+
         for feed_key, feed_cfg in FEEDS.items():
             try:
-                d = await parse_feed_with_headers(
-                    feed_cfg["url"], feed_cfg.get("headers")
-                )
-                if d and d.entries:
-                    # Get the last check time for this feed
-                    last_check_str = self.state.get(feed_cfg["url"])
-                    if last_check_str:
-                        try:
-                            last_check = dateparser.parse(last_check_str)
-                            # Ensure timezone-aware
-                            if last_check.tzinfo is None:
-                                last_check = last_check.replace(tzinfo=timezone.utc)
-                        except Exception:
-                            # If we can't parse the stored time, use an hour ago as fallback
-                            last_check = datetime.now(timezone.utc) - timedelta(hours=1)
+                url = feed_cfg["url"]
+                logger.debug(f"Checking {feed_key}")
+
+                # Parse feed
+                feed_data = await parse_feed(url, feed_cfg.get("headers"))
+                if not feed_data or not feed_data.entries:
+                    if feed_data is None:
+                        logger.error(f"Failed to parse {feed_key} feed")
                     else:
-                        # If no last check time, use an hour ago to avoid spam
-                        last_check = datetime.now(timezone.utc) - timedelta(hours=1)
+                        logger.debug(f"No entries in {feed_key} feed")
+                    continue
 
-                    new_entries = []
-                    latest_entry_date = None
+                # Get last check time
+                feed_info = self.state["feeds"].get(url, {})
+                last_check_str = feed_info.get("last_check")
 
-                    # Debug logging for Twitter specifically
-                    if feed_key == "twitter":
-                        logger.info(
-                            f"Twitter: last_check={last_check}, feed has {len(d.entries)} entries"
+                try:
+                    last_check = dateparser.parse(last_check_str)
+                    if last_check.tzinfo is None:
+                        last_check = last_check.replace(tzinfo=timezone.utc)
+                except Exception:
+                    last_check = datetime.now(timezone.utc) - timedelta(hours=1)
+                    logger.warning(
+                        f"{feed_key}: Invalid last check time, using 1 hour ago"
+                    )
+
+                # Process entries
+                new_entries = []
+                latest_date = None
+
+                for i, entry in enumerate(feed_data.entries):
+                    entry_date = get_entry_date(entry)
+                    post_id = get_post_identifier(entry)
+
+                    if not entry_date or not post_id:
+                        logger.debug(
+                            f"{feed_key} entry {i}: Missing date or ID, skipping"
                         )
+                        continue
 
-                    for i, entry in enumerate(d.entries):
-                        try:
-                            entry_date = get_entry_date(entry)
-                            post_identifier = get_post_identifier(entry)
+                    # Track latest date
+                    if latest_date is None or entry_date > latest_date:
+                        latest_date = entry_date
 
-                            if not entry_date:
-                                logger.warning(
-                                    f"Skipping {feed_key} entry {i} - no valid date"
-                                )
-                                continue
+                    # Skip if already posted
+                    if is_post_recent(self.state, url, post_id):
+                        logger.debug(f"{feed_key} entry {i}: Already posted")
+                        continue
 
-                            if not post_identifier:
-                                logger.warning(
-                                    f"Skipping {feed_key} entry {i} - no valid identifier"
-                                )
-                                continue
+                    # Skip if older than last check
+                    if entry_date.tzinfo is None:
+                        entry_date = entry_date.replace(tzinfo=timezone.utc)
 
-                            # Check if this post was recently posted (duplicate prevention)
-                            if is_post_recently_posted(
-                                self.state, feed_cfg["url"], post_identifier
-                            ):
-                                logger.debug(
-                                    f"Skipping {feed_key} entry {i} - recently posted duplicate"
-                                )
-                                continue
+                    if entry_date <= last_check:
+                        continue
 
-                            # Debug logging for Twitter
-                            if feed_key == "twitter" and i < 5:  # Log first 5 entries
-                                logger.info(f"Twitter entry {i}: date={entry_date}")
+                    # Skip if too old
+                    if is_entry_too_old(entry):
+                        logger.debug(f"{feed_key} entry {i}: Too old")
+                        continue
 
-                            # Keep track of the latest entry date
-                            if (
-                                latest_entry_date is None
-                                or entry_date > latest_entry_date
-                            ):
-                                latest_entry_date = entry_date
+                    new_entries.append(entry)
 
-                            # Skip entries older than our last check
-                            # Ensure both datetimes are timezone-aware for comparison
-                            if entry_date.tzinfo is None:
-                                entry_date_aware = entry_date.replace(
-                                    tzinfo=timezone.utc
-                                )
-                            else:
-                                entry_date_aware = entry_date
+                    # Limit to prevent spam
+                    if len(new_entries) >= 10:
+                        logger.warning(f"Limiting {feed_key} to 10 entries")
+                        break
 
-                            if last_check.tzinfo is None:
-                                last_check_aware = last_check.replace(
-                                    tzinfo=timezone.utc
-                                )
-                            else:
-                                last_check_aware = last_check
+                # Post new entries
+                if new_entries:
+                    forum_channel = self.bot.get_channel(feed_cfg["forum_channel_id"])
+                    if not forum_channel:
+                        logger.error(f"{feed_key}: Forum channel not found")
+                        continue
 
-                            if entry_date_aware <= last_check_aware:
-                                continue
+                    logger.info(f"Posting {len(new_entries)} new {feed_key} entries")
 
-                            # Safety: Don't post old entries (older than MAX_AGE_HOURS)
-                            if is_entry_too_old(entry):
-                                logger.debug(f"Skipping old {feed_key} entry")
-                                continue
+                    # Sort by date (oldest first)
+                    new_entries.sort(
+                        key=lambda x: get_entry_date(x)
+                        or datetime.min.replace(tzinfo=timezone.utc)
+                    )
 
-                            new_entries.append(entry)
+                    for entry in new_entries:
+                        if await self.post_to_forum(
+                            forum_channel, entry, feed_cfg, feed_key
+                        ):
+                            post_id = get_post_identifier(entry)
+                            add_recent_post(self.state, url, post_id)
+                            changed = True
+                            await asyncio.sleep(1)  # Rate limit protection
 
-                            # Safety: Limit number of new entries to post at once
-                            if len(new_entries) >= 10:
-                                logger.warning(
-                                    f"Limiting {feed_key} to 10 new entries to prevent spam"
-                                )
-                                break
-
-                        except Exception as entry_error:
-                            logger.warning(
-                                f"Error processing entry {i} for {feed_key}: {entry_error}"
-                            )
-                            continue
-
-                    if new_entries:
-                        forum_channel = self.bot.get_channel(
-                            feed_cfg["forum_channel_id"]
-                        )
-                        if forum_channel:
-                            logger.info(
-                                f"Posting {len(new_entries)} new {feed_key} entries"
-                            )
-                            # Sort by date (oldest first) to post in chronological order
-                            new_entries.sort(
-                                key=lambda x: get_entry_date(x)
-                                or datetime.min.replace(tzinfo=None)
-                            )
-
-                            for entry in new_entries:
-                                success = await self.send_forum_post(
-                                    forum_channel, entry, feed_cfg, feed_key
-                                )
-                                # Only add to recent posts if successfully posted
-                                if success:
-                                    post_identifier = get_post_identifier(entry)
-                                    add_post_to_recent(
-                                        self.state, feed_cfg["url"], post_identifier
-                                    )
-                                    changed = True
-                        else:
-                            logger.error(
-                                f"{feed_key} forum channel not found: {feed_cfg['forum_channel_id']}"
-                            )
-
-                    # Update the last check time to the latest entry date or current time
-                    if latest_entry_date:
-                        # Use the latest entry date we saw, ensure it's timezone-aware
-                        if latest_entry_date.tzinfo is None:
-                            latest_entry_date = latest_entry_date.replace(
-                                tzinfo=timezone.utc
-                            )
-                        new_last_check = latest_entry_date.isoformat()
-                    else:
-                        # If no entries had dates, just use current time
-                        new_last_check = datetime.now(timezone.utc).isoformat()
-
-                    if new_last_check != self.state.get(feed_cfg["url"]):
-                        self.state[feed_cfg["url"]] = new_last_check
+                # Update last check time
+                if latest_date:
+                    new_check_time = latest_date.isoformat()
+                    if new_check_time != self.state["feeds"][url]["last_check"]:
+                        self.state["feeds"][url]["last_check"] = new_check_time
                         changed = True
-                        logger.info(
-                            f"{feed_key}: Updated last check time to {new_last_check}"
+                        logger.debug(
+                            f"{feed_key}: Updated last check to {new_check_time}"
                         )
-
-                elif d is None:
-                    logger.error(f"Failed to parse {feed_key} feed: {feed_cfg['url']}")
 
             except Exception as e:
-                logger.error(f"RSS error for {feed_key}: {e}")
+                logger.error(f"Error processing {feed_key}: {e}")
 
         if changed:
             save_state(self.state)
 
-    async def send_forum_post(
-        self, forum_channel, entry, feed_cfg: dict, feed_name: str
-    ):
-        """Send a post to a forum channel - simplified unified method"""
-        if not forum_channel or not isinstance(forum_channel, discord.ForumChannel):
+        logger.info("Feed check completed")
+
+    async def post_to_forum(self, forum_channel, entry, feed_cfg, feed_name):
+        """Post entry to Discord forum"""
+        if not isinstance(forum_channel, discord.ForumChannel):
             return False
 
-        thread_title, thread_content = get_thread_title_and_content(entry, feed_cfg)
+        thread_title, thread_content = create_thread_content(entry, feed_cfg)
         url = entry.link
 
         try:
-            # Prepare thread creation arguments
             thread_args = {
                 "name": thread_title,
                 "content": thread_content,
@@ -556,31 +498,18 @@ class RSSFeedCog(commands.Cog):
 
             # Add tags for social feeds
             if feed_cfg["type"] == "social" and "tag_id" in feed_cfg:
-                try:
-                    # Get the tag object from the forum
-                    available_tags = forum_channel.available_tags
-                    tag = None
-                    for available_tag in available_tags:
-                        if available_tag.id == feed_cfg["tag_id"]:
-                            tag = available_tag
-                            break
+                tag = discord.utils.get(
+                    forum_channel.available_tags, id=feed_cfg["tag_id"]
+                )
+                if tag:
+                    thread_args["applied_tags"] = [tag]
 
-                    if tag:
-                        thread_args["applied_tags"] = [tag]
-                    else:
-                        logger.warning(
-                            f"Tag ID {feed_cfg['tag_id']} not found for {feed_name}"
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to apply tag for {feed_name}: {e}")
-
-            # Create the thread
-            thread = await forum_channel.create_thread(**thread_args)
+            await forum_channel.create_thread(**thread_args)
             logger.info(f"Posted {feed_name}: {thread_title}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to post {feed_name} thread: {e}")
+            logger.error(f"Failed to post {feed_name}: {e}")
             return False
 
 
