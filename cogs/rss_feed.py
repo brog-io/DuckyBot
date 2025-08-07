@@ -21,6 +21,15 @@ FEEDS = {
         "name": "Blog",
         "type": "blog",
     },
+    "joy": {
+        "url": "https://joy.ente.io/rss.xml",
+        "role_mention": "<@&1050340002028077106>",
+        "forum_channel_id": 1121470028223623229,
+        "button_text": "Read Blog",
+        "emoji": "<:joy_mug:1402991225547657326>",
+        "name": "Joy",
+        "type": "blog",
+    },
     "mastodon": {
         "url": "https://fosstodon.org/@ente.rss",
         "button_text": "View Post",
