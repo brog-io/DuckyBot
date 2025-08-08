@@ -330,10 +330,11 @@ def create_thread_content(entry, feed_cfg):
         thread_content = (
             f"📰 [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
         )
-    elif feed_cfg["name"] == "Reddit" and title:
+    elif title:
         thread_title = title.strip()
         thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
     else:
+        # Fallback for feeds without titles
         thread_title = f"New {feed_cfg['name']} Post"
         thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
 
