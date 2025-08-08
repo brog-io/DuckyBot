@@ -116,7 +116,7 @@ class SelfHelp(commands.Cog):
                 else "`/docsearch`"
             )
             response_text = (
-                f"{answer}\n-# If your issue is resolved, please use the {solved_hint} command to close this thread. "
+                f"{answer}\n-# If your issue is resolved, feel free to use the {solved_hint} command to close this thread. "
                 f"If you'd like to ask me another question use {docsearch_hint}"
             )
 
@@ -132,7 +132,7 @@ class SelfHelp(commands.Cog):
                 else "`/solved`"
             )
             await thread.send(
-                f"Remember to use {solved_hint} to mark your thread as solved once your question is answered."
+                f"Feel free to use {solved_hint} to mark your thread as solved if your question is answered."
             )
 
         if thread.id in self.processed_threads:

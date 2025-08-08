@@ -16,6 +16,7 @@ FEEDS = {
         "url": "https://ente.io/rss.xml",
         "role_mention": "<@&1050340002028077106>",
         "forum_channel_id": 1121470028223623229,
+        "tag_id": 1403037438519017553,
         "button_text": "Read Blog",
         "emoji": "📰",
         "name": "Blog",
@@ -25,6 +26,7 @@ FEEDS = {
         "url": "https://joy.ente.io/rss.xml",
         "role_mention": "<@&1050340002028077106>",
         "forum_channel_id": 1121470028223623229,
+        "tag_id": 1403037470219829390,
         "button_text": "Read Blog",
         "emoji": "<:joy_mug:1402991225547657326>",
         "name": "Joy",
@@ -50,46 +52,26 @@ FEEDS = {
         "name": "Bluesky",
         "type": "social",
     },
-    "twitter": {
-        "url": "https://rss.app/feeds/XeEvnoeAyKtPJZCf.xml",
-        "button_text": "View Tweet",
-        "role_mention": "<@&1400571684867543233>",
-        "forum_channel_id": 1400567228314943529,
-        "tag_id": 1400569666996535419,
-        "emoji": "<:X_Logo:1400570906644058143>",
-        "name": "Twitter",
-        "type": "social",
-    },
     "reddit": {
         "url": "https://www.reddit.com/r/enteio/new/.rss",
         "button_text": "View Post",
         "role_mention": "<@&1400571795848958052>",
-        "forum_channel_id": 1400567228314943529,
-        "tag_id": 1400569681387061299,
+        "forum_channel_id": 1403396710658605086,
+        "tag_id": 1403396780963397774,
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
-        "type": "social",
+        "type": "community",
         "headers": {"User-Agent": "Ducky/1.0 (https://ente.io; brogio@ente.io)"},
     },
-    "instagram": {
-        "url": "https://rss.app/feeds/kSh7fh1j85tCyFEx.xml",
+    "github": {
+        "url": "https://github.com/ente-io/ente/discussions/categories/general.atom",
         "button_text": "View Post",
-        "role_mention": "<@&1400779976222965962>",
-        "forum_channel_id": 1400567228314943529,
-        "tag_id": 1400780883698651136,
-        "emoji": "<:Instagram_Logo:1400780663614869504>",
-        "name": "Instagram",
-        "type": "social",
-    },
-    "threads": {
-        "url": "https://rss.app/feeds/KLQWdv7w7ukehTax.xml",
-        "button_text": "View Post",
-        "role_mention": "<@&1400779976222965962>",
-        "forum_channel_id": 1400567228314943529,
-        "tag_id": 1400780883698651136,
-        "emoji": "<:Instagram_Logo:1400780663614869504>",
-        "name": "Threads",
-        "type": "social",
+        "role_mention": "<@&1403399186023579688>",
+        "forum_channel_id": 1403396710658605086,
+        "tag_id": 1403399802880000142,
+        "emoji": "<:GitHub_Logo:1403399690753675315>",
+        "name": "GitHub",
+        "type": "community",
     },
 }
 
@@ -505,8 +487,8 @@ class RSSFeedCog(commands.Cog):
                 "view": LinkButton(url, feed_cfg["button_text"]),
             }
 
-            # Add tags for social feeds
-            if feed_cfg["type"] == "social" and "tag_id" in feed_cfg:
+            # Add tags for any feed type that has a tag_id configured
+            if "tag_id" in feed_cfg:
                 tag = discord.utils.get(
                     forum_channel.available_tags, id=feed_cfg["tag_id"]
                 )
