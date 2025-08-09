@@ -141,7 +141,9 @@ class Summarizer(commands.Cog):
         summary = await self.summarize_url(url)
         await status.delete()
 
-        await message.channel.send(f"# 📑 Summary:\n{summary}")
+        await message.channel.send(
+            f"# <:Ducky_Reading:1403688367589425223> Summary:\n{summary}"
+        )
 
         # apply tags
         tag_names = await self.suggest_tags(summary)
