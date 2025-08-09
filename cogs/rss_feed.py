@@ -350,13 +350,14 @@ def create_content(entry, feed_cfg, is_forum=True):
 
         return thread_title, thread_content
     else:
-        # Text channel message content
+        # Text channel message content - now using same hyperlink format as forum
         if title:
-            message_content = (
-                f"{feed_cfg['emoji']} **{title}**\n{url}\n{feed_cfg['role_mention']}"
-            )
+            message_title = title.strip()
+            message_content = f"{feed_cfg['emoji']} [**{message_title}**]({url}) **|** {feed_cfg['role_mention']}"
         else:
-            message_content = f"{feed_cfg['emoji']} **New {feed_cfg['name']} Post**\n{url}\n{feed_cfg['role_mention']}"
+            # Fallback for feeds without titles
+            message_title = f"New {feed_cfg['name']} Post"
+            message_content = f"{feed_cfg['emoji']} [**{message_title}**]({url}) **|** {feed_cfg['role_mention']}"
 
         return None, message_content
 
