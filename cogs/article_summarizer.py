@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Initialize logger
-logger = setup_logger(__name__)
+logger = logging.getLogger(__name__)
 
 # Ensure channel ID is an int
 TARGET_FORUM_CHANNEL_ID = 1403678102340763699
