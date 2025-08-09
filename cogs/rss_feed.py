@@ -15,8 +15,9 @@ FEEDS = {
     "blog": {
         "url": "https://ente.io/rss.xml",
         "role_mention": "<@&1050340002028077106>",
-        "forum_channel_id": 1121470028223623229,
-        "tag_id": 1403037438519017553,
+        "channel_id": 1121470028223623229,
+        "channel_type": "forum",  # "forum" or "text"
+        "tag_id": 1403037438519017553,  # Only used for forum channels
         "button_text": "Read Blog",
         "emoji": "📰",
         "name": "Blog",
@@ -25,7 +26,8 @@ FEEDS = {
     "joy": {
         "url": "https://joy.ente.io/rss.xml",
         "role_mention": "<@&1050340002028077106>",
-        "forum_channel_id": 1121470028223623229,
+        "channel_id": 1121470028223623229,
+        "channel_type": "forum",
         "tag_id": 1403037470219829390,
         "button_text": "Read Blog",
         "emoji": "<:joy_mug:1402991225547657326>",
@@ -36,7 +38,8 @@ FEEDS = {
         "url": "https://fosstodon.org/@ente.rss",
         "button_text": "View Post",
         "role_mention": "<@&1214608287597723739>",
-        "forum_channel_id": 1400567228314943529,
+        "channel_id": 1400567228314943529,
+        "channel_type": "forum",
         "tag_id": 1400569634746269918,
         "emoji": "<:Mastodon_Logo:1312884790210461756>",
         "name": "Mastodon",
@@ -46,7 +49,8 @@ FEEDS = {
         "url": "https://bsky.app/profile/did:plc:uah5jix7ykdrae7a2ezp3rye/rss",
         "button_text": "View Post",
         "role_mention": "<@&1400571735904092230>",
-        "forum_channel_id": 1400567228314943529,
+        "channel_id": 1400567228314943529,
+        "channel_type": "forum",
         "tag_id": 1400569656971886803,
         "emoji": "<:Bluesky_Logo:1400570292740296894>",
         "name": "Bluesky",
@@ -56,8 +60,8 @@ FEEDS = {
         "url": "https://www.reddit.com/r/enteio/new/.rss",
         "button_text": "View Post",
         "role_mention": "<@&1400571795848958052>",
-        "forum_channel_id": 1403396710658605086,
-        "tag_id": 1403396780963397774,
+        "channel_id": 1403396710658605086,
+        "channel_type": "text",
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
         "type": "community",
@@ -67,8 +71,8 @@ FEEDS = {
         "url": "https://github.com/ente-io/ente/discussions/categories/general.atom",
         "button_text": "View Post",
         "role_mention": "<@&1403399186023579688>",
-        "forum_channel_id": 1403396710658605086,
-        "tag_id": 1403399802880000142,
+        "channel_id": 1403396710658605086,
+        "channel_type": "text",
         "emoji": "<:GitHub_Logo:1403399690753675315>",
         "name": "GitHub",
         "type": "community",
@@ -320,29 +324,41 @@ async def parse_feed(url: str, headers: dict = None):
         return None
 
 
-def create_thread_content(entry, feed_cfg):
-    """Create thread title and content"""
+def create_content(entry, feed_cfg, is_forum=True):
+    """Create content for forum thread or text message"""
     url = entry.link
     title = get_first_str(getattr(entry, "title", ""))
 
-    if feed_cfg["type"] == "blog":
-        thread_title = title or "New Blog Post"
-        thread_content = (
-            f"📰 [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
-        )
-    elif title:
-        thread_title = title.strip()
-        thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
+    if is_forum:
+        # Forum thread content
+        if feed_cfg["type"] == "blog":
+            thread_title = title or "New Blog Post"
+            thread_content = (
+                f"📰 [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
+            )
+        elif title:
+            thread_title = title.strip()
+            thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
+        else:
+            # Fallback for feeds without titles
+            thread_title = f"New {feed_cfg['name']} Post"
+            thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
+
+        # Ensure title fits Discord limits
+        if len(thread_title) > 95:
+            thread_title = thread_title[:92] + "..."
+
+        return thread_title, thread_content
     else:
-        # Fallback for feeds without titles
-        thread_title = f"New {feed_cfg['name']} Post"
-        thread_content = f"{feed_cfg['emoji']} [**{thread_title}**]({url}) **|** {feed_cfg['role_mention']}"
+        # Text channel message content
+        if title:
+            message_content = (
+                f"{feed_cfg['emoji']} **{title}**\n{url}\n{feed_cfg['role_mention']}"
+            )
+        else:
+            message_content = f"{feed_cfg['emoji']} **New {feed_cfg['name']} Post**\n{url}\n{feed_cfg['role_mention']}"
 
-    # Ensure title fits Discord limits
-    if len(thread_title) > 95:
-        thread_title = thread_title[:92] + "..."
-
-    return thread_title, thread_content
+        return None, message_content
 
 
 class RSSFeedCog(commands.Cog):
@@ -433,9 +449,9 @@ class RSSFeedCog(commands.Cog):
 
                 # Post new entries
                 if new_entries:
-                    forum_channel = self.bot.get_channel(feed_cfg["forum_channel_id"])
-                    if not forum_channel:
-                        logger.error(f"{feed_key}: Forum channel not found")
+                    channel = self.bot.get_channel(feed_cfg["channel_id"])
+                    if not channel:
+                        logger.error(f"{feed_key}: Channel not found")
                         continue
 
                     logger.info(f"Posting {len(new_entries)} new {feed_key} entries")
@@ -447,8 +463,8 @@ class RSSFeedCog(commands.Cog):
                     )
 
                     for entry in new_entries:
-                        if await self.post_to_forum(
-                            forum_channel, entry, feed_cfg, feed_key
+                        if await self.post_to_channel(
+                            channel, entry, feed_cfg, feed_key
                         ):
                             post_id = get_post_identifier(entry)
                             add_recent_post(self.state, url, post_id)
@@ -473,32 +489,52 @@ class RSSFeedCog(commands.Cog):
 
         logger.info("Feed check completed")
 
-    async def post_to_forum(self, forum_channel, entry, feed_cfg, feed_name):
-        """Post entry to Discord forum"""
-        if not isinstance(forum_channel, discord.ForumChannel):
-            return False
-
-        thread_title, thread_content = create_thread_content(entry, feed_cfg)
+    async def post_to_channel(self, channel, entry, feed_cfg, feed_name):
+        """Post entry to Discord channel (forum or text)"""
         url = entry.link
+        channel_type = feed_cfg.get("channel_type", "forum")
 
         try:
-            thread_args = {
-                "name": thread_title,
-                "content": thread_content,
-                "view": LinkButton(url, feed_cfg["button_text"]),
-            }
-
-            # Add tags for any feed type that has a tag_id configured
-            if "tag_id" in feed_cfg:
-                tag = discord.utils.get(
-                    forum_channel.available_tags, id=feed_cfg["tag_id"]
+            if channel_type == "forum" and isinstance(channel, discord.ForumChannel):
+                # Forum channel posting
+                thread_title, thread_content = create_content(
+                    entry, feed_cfg, is_forum=True
                 )
-                if tag:
-                    thread_args["applied_tags"] = [tag]
 
-            await forum_channel.create_thread(**thread_args)
-            logger.info(f"Posted {feed_name}: {thread_title}")
-            return True
+                thread_args = {
+                    "name": thread_title,
+                    "content": thread_content,
+                    "view": LinkButton(url, feed_cfg["button_text"]),
+                }
+
+                # Add tags if configured
+                if "tag_id" in feed_cfg:
+                    tag = discord.utils.get(
+                        channel.available_tags, id=feed_cfg["tag_id"]
+                    )
+                    if tag:
+                        thread_args["applied_tags"] = [tag]
+
+                await channel.create_thread(**thread_args)
+                logger.info(f"Posted {feed_name} forum thread: {thread_title}")
+                return True
+
+            elif channel_type == "text" and isinstance(channel, discord.TextChannel):
+                # Text channel posting
+                _, message_content = create_content(entry, feed_cfg, is_forum=False)
+
+                await channel.send(
+                    content=message_content,
+                    view=LinkButton(url, feed_cfg["button_text"]),
+                )
+                logger.info(f"Posted {feed_name} text message")
+                return True
+
+            else:
+                logger.error(
+                    f"Channel type mismatch for {feed_name}: expected {channel_type}, got {type(channel).__name__}"
+                )
+                return False
 
         except Exception as e:
             logger.error(f"Failed to post {feed_name}: {e}")
