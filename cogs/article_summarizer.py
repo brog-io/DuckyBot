@@ -5,6 +5,7 @@ from discord.ext import commands
 from newspaper import Article
 from openai import OpenAI
 import logging
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
