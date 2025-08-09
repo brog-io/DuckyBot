@@ -137,7 +137,9 @@ class Summarizer(commands.Cog):
         )
 
         # summarize
-        status = await message.channel.send("🔍 Summarizing your article…")
+        status = await message.channel.send(
+            "<:Ducky_Reading:1403688367589425223> Reading your article…"
+        )
         summary = await self.summarize_url(url)
         await status.delete()
 
