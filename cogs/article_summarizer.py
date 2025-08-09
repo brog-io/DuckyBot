@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Ensure channel ID is an int
 TARGET_FORUM_CHANNEL_ID = 1403678102340763699
-client = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Tag map with IDs and descriptions
 TAG_MAP = {
