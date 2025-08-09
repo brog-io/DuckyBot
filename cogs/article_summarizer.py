@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 from newspaper import Article
 from openai import OpenAI
-from core.logger import setup_logger
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
