@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 LEADERBOARD_CHANNEL_ID = 1377185231995666542
+GUILD_ID = 948937918347608085
 
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
@@ -90,8 +91,14 @@ class MessageTracker(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Only track messages from bots and from the specified guild
         if message.author.bot:
             return
+
+        # Check if message is from the target guild
+        if not message.guild or message.guild.id != GUILD_ID:
+            return
+
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         pool = await self._get_pool()
         async with pool.acquire() as conn:
@@ -347,4 +354,4 @@ class MessageTracker(commands.Cog):
 async def setup(bot: commands.Bot):
     cog = MessageTracker(bot)
     await bot.add_cog(cog)
-    bot.add_view(cog.LeaderboardView(cog))  # Register persistent view
+    bot.add_view(cog.LeaderboardView(cog))
