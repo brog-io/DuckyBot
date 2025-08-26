@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 API_KEY = os.getenv("POGGERS_API_KEY")
 
+TARGET_GUILD_ID = 948937918347608085
+
 SELFHELP_CHANNEL_IDS = [1364139133794123807, 1383504546361380995]
 SOLVED_ONLY_CHANNEL_IDS = [1121126215995113552]
 
@@ -32,6 +34,10 @@ class SelfHelp(commands.Cog):
         self.solved_command_id = None
         self.unsolve_command_id = None
         self.docsearch_command_id = None
+
+    def _is_target_guild(self, guild_id: int) -> bool:
+        """Check if the guild ID matches the target server."""
+        return guild_id == TARGET_GUILD_ID
 
     async def post_setup(self):
         try:
@@ -79,6 +85,10 @@ class SelfHelp(commands.Cog):
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
     ):
+        # Check if this is the target guild
+        if not self._is_target_guild(thread.guild.id):
+            return
+
         if thread.id in self.processed_threads:
             return
         self.processed_threads.add(thread.id)
@@ -135,64 +145,10 @@ class SelfHelp(commands.Cog):
                 f"Feel free to use {solved_hint} to mark your thread as solved if your question is answered."
             )
 
-        if thread.id in self.processed_threads:
-            return
-        self.processed_threads.add(thread.id)
-
-        if thread.parent_id in SELFHELP_CHANNEL_IDS:
-            await thread.send("Analyzing your question, please wait...")
-
-            body = initial_message.content if initial_message else ""
-            if not body:
-                try:
-                    async for msg in thread.history(limit=1, oldest_first=True):
-                        body = msg.content
-                        break
-                except Exception as e:
-                    logger.error(f"Failed to fetch first message: {e}")
-
-            tag_names = []
-            if isinstance(thread.parent, discord.ForumChannel):
-                all_tags = {tag.id: tag.name for tag in thread.parent.available_tags}
-                tag_names = [
-                    all_tags.get(t.id if hasattr(t, "id") else t, "")
-                    for t in thread.applied_tags or []
-                ]
-
-            query = thread.name or body
-            answer = await self.query_api(query, body, tag_names)
-            solved_hint = (
-                f"</solved:{self.solved_command_id}>"
-                if self.solved_command_id
-                else "`/solved`"
-            )
-            docsearch_hint = (
-                f"</docsearch:{self.docsearch_command_id}>"
-                if self.docsearch_command_id
-                else "`/docsearch`"
-            )
-            await thread.send(
-                f"{answer}\n-# If your issue is resolved, please use the {solved_hint} command to close this thread. If you'd like to ask me another question use {docsearch_hint}"
-            )
-
-            async for msg in thread.history(limit=5):
-                if msg.content.startswith("Analyzing your question"):
-                    await msg.delete()
-                    break
-
-        elif thread.parent_id in SOLVED_ONLY_CHANNEL_IDS:
-            solved_hint = (
-                f"</solved:{self.solved_command_id}>"
-                if self.solved_command_id
-                else "`/solved`"
-            )
-            await thread.send(
-                f"Remember to use {solved_hint} to mark your thread as solved once your question is answered."
-            )
-
     @app_commands.command(
         name="solved", description="Manually mark a thread as solved."
     )
+    @app_commands.guilds(TARGET_GUILD_ID)  # Restrict command to target guild
     async def solved(self, interaction: discord.Interaction):
         thread = interaction.channel
         if not isinstance(thread, discord.Thread):
@@ -253,6 +209,7 @@ class SelfHelp(commands.Cog):
     @app_commands.command(
         name="unsolve", description="Cancel auto-close and reopen thread"
     )
+    @app_commands.guilds(TARGET_GUILD_ID)  # Restrict command to target guild
     async def unsolve(self, interaction: discord.Interaction):
         thread = interaction.channel
         if not isinstance(thread, discord.Thread):
@@ -299,6 +256,10 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
+        # Check if this is the target guild
+        if not self._is_target_guild(thread.guild.id):
+            return
+
         if (
             thread.parent_id not in SELFHELP_CHANNEL_IDS
             and thread.parent_id not in SOLVED_ONLY_CHANNEL_IDS
@@ -309,6 +270,14 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Check if this is the target guild
+        if (
+            not hasattr(message, "guild")
+            or message.guild is None
+            or not self._is_target_guild(message.guild.id)
+        ):
+            return
+
         if (
             isinstance(message.channel, discord.Thread)
             and message.channel.parent_id
