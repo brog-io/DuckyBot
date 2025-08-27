@@ -148,7 +148,6 @@ class SelfHelp(commands.Cog):
     @app_commands.command(
         name="solved", description="Manually mark a thread as solved."
     )
-    @app_commands.guilds(TARGET_GUILD_ID)  # Restrict command to target guild
     async def solved(self, interaction: discord.Interaction):
         thread = interaction.channel
         if not isinstance(thread, discord.Thread):
@@ -209,7 +208,6 @@ class SelfHelp(commands.Cog):
     @app_commands.command(
         name="unsolve", description="Cancel auto-close and reopen thread"
     )
-    @app_commands.guilds(TARGET_GUILD_ID)  # Restrict command to target guild
     async def unsolve(self, interaction: discord.Interaction):
         thread = interaction.channel
         if not isinstance(thread, discord.Thread):
