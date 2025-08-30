@@ -15,8 +15,14 @@ class LogFileWarning(commands.Cog):
             ".log",
         }  # Define as a set for O(1) lookup
 
+        self.target_server_id = 948937918347608085
+
     @commands.Cog.listener()
     async def on_message(self, message):
+        # Only work in the specified server
+        if not message.guild or message.guild.id != self.target_server_id:
+            return
+
         # Ignore messages from bots
         if message.author.bot:
             return
@@ -39,10 +45,8 @@ class LogFileWarning(commands.Cog):
                             "*This helps ensure the confidentiality of your information.*",
                             mention_author=True,
                         )
-
                         # Store the warning message linked to the original message
                         self.warning_messages[message.id] = warning_msg
-
                         self.logger.info(
                             f"Log file uploaded by {message.author} in {message.channel}"
                         )
@@ -52,13 +56,16 @@ class LogFileWarning(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_delete(self, message):
+        # Only work in the specified server
+        if not message.guild or message.guild.id != self.target_server_id:
+            return
+
         # Check if the deleted message had a corresponding warning
         if message.id in self.warning_messages:
             try:
                 # Delete the associated warning message
                 warning_msg = self.warning_messages[message.id]
                 await warning_msg.delete()
-
                 # Remove the entry from the tracking dictionary
                 del self.warning_messages[message.id]
             except discord.HTTPException:
