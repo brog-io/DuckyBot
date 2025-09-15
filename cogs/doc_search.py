@@ -63,8 +63,8 @@ class DocSearch(commands.Cog):
 
         # Role blacklist
         self.ROLE_BLACKLIST = [
-            123456789012345678,  # Example role ID
-            987654321098765432,  # Example role ID
+            950276268593659925,
+            950275266045960254,
         ]
 
         # Cooldown: user_id -> timestamp of last trigger
