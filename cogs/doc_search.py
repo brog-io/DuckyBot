@@ -69,7 +69,7 @@ class DocSearch(commands.Cog):
 
         # Cooldown: user_id -> timestamp of last trigger
         self.user_cooldowns: dict[int, float] = {}
-        self.COOLDOWN_SECONDS = 15 * 60  # 15 minutes
+        self.COOLDOWN_SECONDS = 30 * 60  # 15 minutes
 
         # Channel specific auto replies
         self.CHANNEL_AUTO_REPLIES: dict[int, dict[str, object]] = {
