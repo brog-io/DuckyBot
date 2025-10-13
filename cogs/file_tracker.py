@@ -389,21 +389,18 @@ class FileTracker(commands.Cog):
                 self.save_data()
                 view = PersistentView()
                 view.add_item(RefreshButton())
-                try:
-                    await interaction.message.edit(embed=files_embed, view=view)
-                except Exception:
-                    await interaction.followup.send(embed=files_embed, view=view)
+
+                # Edit the deferred response (works for both buttons and slash commands)
+                await interaction.edit_original_response(embed=files_embed, view=view)
             else:
-                await interaction.followup.send(
-                    "Failed to fetch the current file count. Please try again later.",
-                    ephemeral=True,
+                await interaction.edit_original_response(
+                    content="Failed to fetch the current file count. Please try again later."
                 )
         except Exception as e:
             logger.error(f"Error in handle_refresh: {e}", exc_info=True)
             try:
-                await interaction.followup.send(
-                    "An error occurred while processing the request. Please try again later.",
-                    ephemeral=True,
+                await interaction.edit_original_response(
+                    content="An error occurred while processing the request. Please try again later."
                 )
             except:
                 pass
