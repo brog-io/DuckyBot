@@ -279,19 +279,34 @@ class FileTracker(commands.Cog):
         try:
             user_id = interaction.user.id
             current_time = datetime.now(timezone.utc)
+
+            # Check cooldown BEFORE deferring (must be fast)
             if user_id in self.button_cooldowns:
                 time_diff = (
                     current_time - self.button_cooldowns[user_id]
                 ).total_seconds()
                 if time_diff < 30:
-                    await interaction.response.send_message(
-                        f"Please wait {30 - int(time_diff)} seconds before refreshing again.",
-                        ephemeral=True,
-                    )
+                    try:
+                        await interaction.response.send_message(
+                            f"Please wait {30 - int(time_diff)} seconds before refreshing again.",
+                            ephemeral=True,
+                        )
+                    except discord.NotFound:
+                        logger.warning("Interaction expired during cooldown check")
                     return
-            await interaction.response.defer()
+
+            # Defer IMMEDIATELY - catch if interaction is already expired
+            try:
+                await interaction.response.defer()
+            except discord.NotFound:
+                logger.warning(
+                    "Interaction token expired or invalid - button may be from old message"
+                )
+                return
+
             self.button_cooldowns[user_id] = current_time
             current_count = await self.fetch_file_count()
+
             if current_count is not None:
                 increase_text = ""
                 milestone_text = ""
@@ -390,12 +405,14 @@ class FileTracker(commands.Cog):
                 view = PersistentView()
                 view.add_item(RefreshButton())
 
-                # Edit the deferred response (works for both buttons and slash commands)
                 await interaction.edit_original_response(embed=files_embed, view=view)
             else:
                 await interaction.edit_original_response(
                     content="Failed to fetch the current file count. Please try again later."
                 )
+        except discord.NotFound:
+            # Interaction expired - silently fail since we can't respond
+            logger.warning("Interaction expired before response could be completed")
         except Exception as e:
             logger.error(f"Error in handle_refresh: {e}", exc_info=True)
             try:
