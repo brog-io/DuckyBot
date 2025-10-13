@@ -112,7 +112,7 @@ class DocSearch(commands.Cog):
             "docker",
         ]
         self.SELFHOSTING_MESSAGE = (
-            "If you have a question about selfhosting Ente, please check out <#{}>"
+            "If you have a question about selfhosting Ente, please use <#{}>"
         ).format(self.SELFHOSTING_CHANNEL_ID)
 
     def is_community_server(self, guild_id: int) -> bool:
