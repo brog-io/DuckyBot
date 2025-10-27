@@ -96,7 +96,16 @@ class Summarizer(commands.Cog):
                             "You are a helpful assistant that summarizes Discord conversations. "
                             "Provide a concise but comprehensive summary organized by topic. "
                             "Highlight key discussions, decisions, questions, and action items. "
-                            "Keep the summary well-structured and easy to read."
+                            "Use Discord markdown formatting to make the summary visually appealing:\n"
+                            "- Use **bold** for emphasis on key points\n"
+                            "- Use # for titles and ## for subtitles\n"
+                            "- Use `code` for technical terms, features, or product names\n"
+                            "- Use bullet points (- or •) for lists\n"
+                            "- Use > for quotes if relevant\n"
+                            "- Keep the summary well-structured and easy to scan\n"
+                            "When organizing topics, format them as:\n"
+                            "**[TOPIC_NUMBER]) Topic Name**\n"
+                            "For example: **1) Storage & plans** or **2) Feature requests & roadmap**"
                         ),
                     },
                     {
