@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Tuple
 import os
 import io
+import re  # Used for pattern-based hyperlinking
 
 import openai
 
@@ -38,6 +39,32 @@ class Summarizer(commands.Cog):
 
         # Initialize OpenAI client
         self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        # Section keyword, URL resolution rules for auto-linking numbered sections.
+        # Order matters, first match wins. Patterns are case-insensitive substring checks.
+        # Adjust or extend this map to cover more destinations as needed.
+        self.SECTION_LINK_MAP: List[Tuple[str, str]] = [
+            # Storage and files
+            ("locker", "https://ente.io/drive"),
+            ("drive", "https://ente.io/drive"),
+            ("files", "https://ente.io/drive"),
+            ("file backup", "https://help.ente.io/backups"),
+            ("file backups", "https://help.ente.io/backups"),
+            ("backup", "https://help.ente.io/backups"),
+            ("backups", "https://help.ente.io/backups"),
+            # Products
+            ("photos", "https://ente.io/photos"),
+            ("auth", "https://ente.io/auth"),
+            ("2fa", "https://ente.io/auth"),
+            ("mfa", "https://ente.io/auth"),
+            # Docs and help
+            ("faq", "https://help.ente.io"),
+            ("help", "https://help.ente.io"),
+            ("support", "https://help.ente.io"),
+            # Privacy and security
+            ("privacy", "https://ente.io"),
+            ("security", "https://ente.io"),
+        ]
 
     # ---------- Utility: safe chunking helpers ----------
 
@@ -196,26 +223,22 @@ class Summarizer(commands.Cog):
         Returns:
             tuple: (formatted_text, dict mapping channel names to first message URLs)
 
-        This now creates markdown-linked "titles" per channel, so clicking the channel
-        header takes you to the first relevant message in that channel.
+        Also creates markdown-linked channel headers per section when possible.
         """
         formatted: List[str] = []
         channel_links: Dict[str, str] = {}
 
         for channel_name, messages in messages_by_channel.items():
-            # Determine the first jump URL for this channel section, if any
             first_jump_url = messages[0].jump_url if messages else None
             if messages:
                 channel_links[channel_name] = first_jump_url
 
             # Channel header with a clickable link to the first message
-            # Example: ## [#general](https://discord.com/channels/...)
             if first_jump_url:
                 formatted.append(f"\n## [#{channel_name}]({first_jump_url})\n")
             else:
                 formatted.append(f"\n## #{channel_name}\n")
 
-            # Append messages in chronological order with compact formatting
             for msg in messages:
                 timestamp = msg.created_at.strftime("%H:%M")
                 author = msg.author.display_name
@@ -236,10 +259,78 @@ class Summarizer(commands.Cog):
             )
         return combined, channel_links
 
+    # ---------- Linkification helpers for model output ----------
+
+    def _resolve_section_url(self, section_title: str) -> Optional[str]:
+        """
+        Given a section title like '4) Locker / Drive / file backups', return the best URL to link to.
+        Matching is case-insensitive and uses the SECTION_LINK_MAP in order.
+        If multiple keywords appear, the first matching rule wins.
+        """
+        lower = section_title.lower()
+        # Remove the leading 'N) ' prefix if present to improve matching
+        cleaned = re.sub(r"^\s*\d+\)\s*", "", lower)
+        for needle, url in self.SECTION_LINK_MAP:
+            if needle in cleaned:
+                return url
+        return None
+
+    def _linkify_numbered_sections(self, text: str) -> str:
+        """
+        Convert numbered section lines like '4) Locker / Drive / file backups'
+        into hyperlinks: '[4) Locker / Drive / file backups](https://ente.io/drive)'.
+
+        This only links the full line when a URL can be resolved from keywords.
+        It preserves the original text otherwise.
+        """
+        # Pattern matches the entire line starting with 'number)' and captures the section text.
+        # We keep trailing text to the end of the line so wrapped lines are not half-linked.
+        pattern = re.compile(r"^(\s*\d+\)\s+)(.+)$", flags=re.MULTILINE)
+
+        def repl(match: re.Match) -> str:
+            prefix = match.group(1)  # e.g., "4) "
+            title = match.group(2)  # e.g., "Locker / Drive / file backups"
+            url = self._resolve_section_url(title)
+            if url:
+                # Linkify the entire visible line content (including the numeric prefix)
+                visible = f"{prefix}{title}".rstrip()
+                return f"[{visible}]({url})"
+            return match.group(0)
+
+        return pattern.sub(repl, text)
+
+    # Optional: also replace specific keywords anywhere in the text with links
+    def _linkify_keywords_inline(self, text: str) -> str:
+        """
+        Additionally, replace common keywords inside the summary body with inline links.
+        This is conservative to avoid over-linking. Edit as needed.
+        """
+        replacements = {
+            "Ente Photos": "https://ente.io/photos",
+            "Ente Auth": "https://ente.io/auth",
+            "Locker": "https://ente.io/drive",
+            "Drive": "https://ente.io/drive",
+            "file backups": "https://help.ente.io/backups",
+        }
+        for word, url in replacements.items():
+            # Replace standalone words or exact phrases, case-insensitive, without nesting links
+            text = re.sub(
+                rf"(?<!\])(?<!\w){re.escape(word)}(?!\w)(?!\()",
+                f"[{word}]({url})",
+                text,
+                flags=re.IGNORECASE,
+            )
+        return text
+
     # ---------- Model call and length control ----------
 
     async def generate_summary(self, messages_text: str, hours: int) -> str:
-        """Generate a summary using the model, asking for concision, then apply a hard character cap."""
+        """
+        Generate a summary using the model, asking for concision, then post-process:
+        1) Convert numbered section headers into hyperlinks when resolvable.
+        2) Optionally linkify common keywords inline.
+        3) Apply a hard character cap for Discord safety.
+        """
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-5-mini",
@@ -274,6 +365,12 @@ class Summarizer(commands.Cog):
             text = response.choices[0].message.content or ""
         except Exception as e:
             return f"Error generating summary: {str(e)}"
+
+        # First, turn numbered section headings into hyperlinks when resolvable
+        text = self._linkify_numbered_sections(text)
+
+        # Optionally, also linkify common keywords inline elsewhere in the text
+        text = self._linkify_keywords_inline(text)
 
         # Apply a hard cap to guarantee we can split into embeds safely later
         if len(text) > MODEL_SUMMARY_HARD_CAP:
@@ -335,19 +432,17 @@ class Summarizer(commands.Cog):
                 ", ".join([f"#{name}" for name in messages_by_channel.keys()]) or "None"
             )
 
-            # Build links text for the header field, individual channel headers in the body are also clickable
+            # Build links text and chunk later if needed
             links_text = (
                 " • ".join([f"[#{name}]({url})" for name, url in channel_links.items()])
                 or "None"
             )
 
             base_title = f"Server Summary, last {hours} hour(s)"
-            # Use an explicit Color object to avoid ambiguity across discord.py versions
-            color = discord.Color(0xFFCD3F)
+            color = discord.Color(0xFFCD3F)  # Ente yellow
             ts = datetime.utcnow()
 
-            # Choose a primary link to attach to the embed title itself.
-            # This makes the embed title clickable. We use the first channel link if available.
+            # Choose a primary link to attach to the embed title itself (first channel link if available)
             primary_link = next(iter(channel_links.values()), None)
 
             # Prepare header fields for the first embed
