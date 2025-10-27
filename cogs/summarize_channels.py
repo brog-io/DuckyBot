@@ -98,7 +98,7 @@ class Summarizer(commands.Cog):
                         ),
                     },
                 ],
-                temperature=0.7,
+                temperature=1,
                 max_completion_tokens=2000,
             )
 
