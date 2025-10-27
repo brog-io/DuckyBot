@@ -55,12 +55,21 @@ class Summarizer(commands.Cog):
 
     def format_messages_for_summary(
         self, messages_by_channel: dict[str, List[discord.Message]]
-    ) -> str:
-        """Format messages into a readable text block for summarization."""
+    ) -> tuple[str, dict[str, str]]:
+        """Format messages into a readable text block for summarization.
+
+        Returns:
+            tuple: (formatted_text, dict mapping channel names to first message URLs)
+        """
         formatted = []
+        channel_links = {}
 
         for channel_name, messages in messages_by_channel.items():
             formatted.append(f"\n## Channel: #{channel_name}\n")
+
+            # Store the first message link for this channel
+            if messages:
+                channel_links[channel_name] = messages[0].jump_url
 
             for msg in messages:
                 timestamp = msg.created_at.strftime("%H:%M")
@@ -73,7 +82,7 @@ class Summarizer(commands.Cog):
 
                 formatted.append(f"[{timestamp}] {author}: {content}")
 
-        return "\n".join(formatted)
+        return "\n".join(formatted), channel_links
 
     async def generate_summary(self, messages_text: str, hours: int) -> str:
         """Generate a summary using AI."""
@@ -98,7 +107,6 @@ class Summarizer(commands.Cog):
                         ),
                     },
                 ],
-                temperature=1,
                 max_completion_tokens=2000,
             )
 
@@ -140,8 +148,10 @@ class Summarizer(commands.Cog):
             # Count total messages
             total_messages = sum(len(msgs) for msgs in messages_by_channel.values())
 
-            # Format messages
-            messages_text = self.format_messages_for_summary(messages_by_channel)
+            # Format messages and get links
+            messages_text, channel_links = self.format_messages_for_summary(
+                messages_by_channel
+            )
 
             # Check if there's too much content
             if len(messages_text) > 50000:
@@ -171,6 +181,15 @@ class Summarizer(commands.Cog):
             embed.add_field(
                 name="Total Messages", value=str(total_messages), inline=True
             )
+
+            # Add clickable links to jump to conversations
+            if channel_links:
+                links_text = " • ".join(
+                    [f"[#{name}]({url})" for name, url in channel_links.items()]
+                )
+                embed.add_field(
+                    name="🔗 Jump to Conversations", value=links_text, inline=False
+                )
 
             embed.set_footer(text=f"Requested by {interaction.user.display_name}")
 
