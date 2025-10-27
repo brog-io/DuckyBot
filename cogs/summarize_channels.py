@@ -373,10 +373,10 @@ class Summarizer(commands.Cog):
                     text=f"Requested by {interaction.user.display_name}"
                 )
 
-            # Send message
-            await interaction.followup.send(
-                embeds=embeds, files=attachments if attachments else None
-            )
+            if attachments:
+                await interaction.followup.send(embeds=embeds, files=attachments)
+            else:
+                await interaction.followup.send(embeds=embeds)
 
         except discord.Forbidden:
             await interaction.followup.send(
