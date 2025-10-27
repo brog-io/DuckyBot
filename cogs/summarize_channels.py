@@ -248,7 +248,7 @@ class Summarizer(commands.Cog):
                     },
                 ],
                 # Use max_tokens to bound the model output size
-                max_tokens=2000,
+                max_completion_tokens=2000,
             )
             text = response.choices[0].message.content or ""
         except Exception as e:
