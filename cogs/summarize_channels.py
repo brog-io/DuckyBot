@@ -103,6 +103,7 @@ class Summarizer(commands.Cog):
                             "- Use bullet points (- or •) for lists\n"
                             "- Use > for quotes if relevant\n"
                             "- Keep the summary well-structured and easy to scan\n"
+                            "- Must be 4096 or fewer in length.\n"
                             "When organizing topics, format them as:\n"
                             "**[TOPIC_NUMBER]) Topic Name**\n"
                             "For example: **1) Storage & plans** or **2) Feature requests & roadmap**"
