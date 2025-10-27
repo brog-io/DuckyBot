@@ -321,7 +321,7 @@ class Summarizer(commands.Cog):
             )
 
             base_title = f"Server Summary, last {hours} hour(s)"
-            color = discord.Color.blue()
+            color = 0xFFCD3F
             ts = datetime.utcnow()
 
             # Prepare header fields for the first embed
