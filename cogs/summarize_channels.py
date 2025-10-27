@@ -81,6 +81,7 @@ class Summarizer(commands.Cog):
                     description="",
                     color=embeds_out[-1].colour,
                     timestamp=embeds_out[-1].timestamp,
+                    url=embeds_out[-1].url,
                 )
                 embeds_out.append(cont_embed)
             embeds_out[-1].add_field(
@@ -96,10 +97,13 @@ class Summarizer(commands.Cog):
         color: discord.Color,
         timestamp_dt: datetime,
         header_fields: Dict[str, str],
+        base_url: Optional[str] = None,
     ) -> List[discord.Embed]:
         """
         Build one or more embeds for the summary. The first embed carries header fields.
         Long description is split across multiple embeds, respecting limits and caps.
+
+        base_url, if provided, will make the embed title clickable.
         """
         # Split summary into description-sized chunks
         desc_chunks = Summarizer._chunk_text(summary_text, EMBED_DESC_MAX)
@@ -112,8 +116,9 @@ class Summarizer(commands.Cog):
             description=desc_chunks[0] if desc_chunks else "",
             color=color,
             timestamp=timestamp_dt,
+            url=base_url if base_url else discord.Embed.Empty,
         )
-        # Add header fields safely (these may themselves need chunking)
+        # Add header fields safely, these may themselves need chunking
         for fname, fvalue in header_fields.items():
             temp_embeds = Summarizer._safe_add_chunked_field(
                 first, fname, fvalue, inline=False
@@ -122,8 +127,12 @@ class Summarizer(commands.Cog):
             if len(temp_embeds) == 1:
                 first = temp_embeds[0]
             else:
-                # first updated and then additional embeds were appended; collect them
+                # first updated and then additional embeds were appended, collect them
                 first = temp_embeds[0]
+                # Ensure continuation embeds inherit the clickable URL if present
+                for emb in temp_embeds[1:]:
+                    if base_url and not emb.url:
+                        emb.url = base_url
                 embeds.extend(temp_embeds[1:])
 
         embeds.insert(0, first)
@@ -137,6 +146,7 @@ class Summarizer(commands.Cog):
                 description=chunk,
                 color=color,
                 timestamp=timestamp_dt,
+                url=base_url if base_url else discord.Embed.Empty,
             )
             embeds.append(emb)
 
@@ -185,16 +195,27 @@ class Summarizer(commands.Cog):
 
         Returns:
             tuple: (formatted_text, dict mapping channel names to first message URLs)
+
+        This now creates markdown-linked "titles" per channel, so clicking the channel
+        header takes you to the first relevant message in that channel.
         """
         formatted: List[str] = []
         channel_links: Dict[str, str] = {}
 
         for channel_name, messages in messages_by_channel.items():
-            formatted.append(f"\n## Channel: #{channel_name}\n")
-
+            # Determine the first jump URL for this channel section, if any
+            first_jump_url = messages[0].jump_url if messages else None
             if messages:
-                channel_links[channel_name] = messages[0].jump_url
+                channel_links[channel_name] = first_jump_url
 
+            # Channel header with a clickable link to the first message
+            # Example: ## [#general](https://discord.com/channels/...)
+            if first_jump_url:
+                formatted.append(f"\n## [#{channel_name}]({first_jump_url})\n")
+            else:
+                formatted.append(f"\n## #{channel_name}\n")
+
+            # Append messages in chronological order with compact formatting
             for msg in messages:
                 timestamp = msg.created_at.strftime("%H:%M")
                 author = msg.author.display_name
@@ -314,15 +335,20 @@ class Summarizer(commands.Cog):
                 ", ".join([f"#{name}" for name in messages_by_channel.keys()]) or "None"
             )
 
-            # Build links text and chunk later if needed
+            # Build links text for the header field, individual channel headers in the body are also clickable
             links_text = (
                 " • ".join([f"[#{name}]({url})" for name, url in channel_links.items()])
                 or "None"
             )
 
             base_title = f"Server Summary, last {hours} hour(s)"
-            color = 0xFFCD3F
+            # Use an explicit Color object to avoid ambiguity across discord.py versions
+            color = discord.Color(0xFFCD3F)
             ts = datetime.utcnow()
+
+            # Choose a primary link to attach to the embed title itself.
+            # This makes the embed title clickable. We use the first channel link if available.
+            primary_link = next(iter(channel_links.values()), None)
 
             # Prepare header fields for the first embed
             header_fields = {
@@ -336,13 +362,14 @@ class Summarizer(commands.Cog):
                 await interaction.followup.send(summary)
                 return
 
-            # Construct embeds with smart chunking
+            # Construct embeds with smart chunking and a clickable title URL when available
             embeds = self._build_summary_embeds(
                 base_title=base_title,
                 summary_text=summary,
                 color=color,
                 timestamp_dt=ts,
                 header_fields=header_fields,
+                base_url=primary_link,
             )
 
             # If we somehow exceeded 10 embeds, attach the rest as a file
