@@ -184,35 +184,6 @@ class Summarizer(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ An error occurred: {str(e)}")
 
-    @app_commands.command(
-        name="set_summary_channels",
-        description="Configure which channels to monitor (Admin only)",
-    )
-    @app_commands.describe(channels="Channels to monitor (mention them)")
-    @app_commands.default_permissions(administrator=True)
-    async def set_summary_channels(
-        self, interaction: discord.Interaction, channels: str
-    ):
-        """Set which channels should be included in summaries."""
-        # Extract channel IDs from mentions
-        channel_ids = [
-            int(ch_id) for ch_id in channels.split() if ch_id.strip("<>#").isdigit()
-        ]
-
-        if not channel_ids:
-            await interaction.response.send_message(
-                "⚠️ Please mention valid channels.", ephemeral=True
-            )
-            return
-
-        self.monitored_channels = channel_ids
-
-        channel_names = [f"<#{ch_id}>" for ch_id in channel_ids]
-
-        await interaction.response.send_message(
-            f"✅ Summary channels updated: {', '.join(channel_names)}", ephemeral=True
-        )
-
 
 async def setup(bot):
     """Load the cog."""
