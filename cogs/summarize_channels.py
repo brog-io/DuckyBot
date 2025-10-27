@@ -25,11 +25,23 @@ RAW_MESSAGES_TEXT_CAP = 120_000  # characters, upstream cutoff
 
 
 class Summarizer(commands.Cog):
-    """Cog for summarizing Discord channel conversations."""
+    """Cog for summarizing Discord channel conversations.
+
+    This version fetches messages from specific channels in the main server,
+    even if you run the command from your dev server. It does so by resolving
+    channels globally via bot.get_channel(channel_id) and checking permissions
+    in the channel's own guild.
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Configure which channels to monitor (add your channel IDs here)
+
+        # Optional, purely for nicer headers. If not set, we infer from the first channel we can resolve.
+        self.main_guild_id: Optional[int] = None
+        self.main_guild_id = 948937918347608085
+
+        # Configure which channels to monitor (IDs from the MAIN server)
+        # You can keep these in code or fetch from env, config file, database, etc.
         self.monitored_channels: List[int] = [
             948937919027105865,
             1051153671985045514,
@@ -105,7 +117,6 @@ class Summarizer(commands.Cog):
 
         base_url, if provided, will make the embed title clickable.
         """
-        # Split summary into description-sized chunks
         desc_chunks = Summarizer._chunk_text(summary_text, EMBED_DESC_MAX)
 
         embeds: List[discord.Embed] = []
@@ -123,13 +134,10 @@ class Summarizer(commands.Cog):
             temp_embeds = Summarizer._safe_add_chunked_field(
                 first, fname, fvalue, inline=False
             )
-            # _safe_add_chunked_field may have created continuation embeds for field overflow
             if len(temp_embeds) == 1:
                 first = temp_embeds[0]
             else:
-                # first updated and then additional embeds were appended, collect them
                 first = temp_embeds[0]
-                # Ensure continuation embeds inherit the clickable URL if present
                 for emb in temp_embeds[1:]:
                     if base_url and not emb.url:
                         emb.url = base_url
@@ -140,7 +148,7 @@ class Summarizer(commands.Cog):
         # Remaining description chunks, each in its own embed
         for idx, chunk in enumerate(desc_chunks[1:], start=2):
             if len(embeds) >= MAX_EMBEDS_PER_MESSAGE:
-                break  # stop at 10 embeds to satisfy Discord
+                break
             emb = discord.Embed(
                 title=f"{base_title} (continued {idx - 1})",
                 description=chunk,
@@ -154,38 +162,60 @@ class Summarizer(commands.Cog):
 
     # ---------- Message collection and formatting ----------
 
-    async def fetch_messages_from_channels(
-        self, guild: discord.Guild, hours: int
-    ) -> Dict[str, List[discord.Message]]:
-        """Fetch messages from monitored channels within the specified timeframe."""
+    async def fetch_messages_from_main_channels(
+        self, hours: int
+    ) -> Tuple[Dict[str, List[discord.Message]], Optional[discord.Guild]]:
+        """Fetch messages from the configured main-server channels across guilds.
+
+        This does not use interaction.guild. It resolves channels globally and
+        checks read permissions in each channel's own guild.
+
+        Returns:
+            messages_by_channel: map from channel.name to chronological list of user messages
+            source_guild: the first resolved guild that matches our channels, used for display
+        """
         cutoff_time = datetime.utcnow() - timedelta(hours=hours)
         messages_by_channel: Dict[str, List[discord.Message]] = {}
 
+        source_guild: Optional[discord.Guild] = None
+
         for channel_id in self.monitored_channels:
-            channel = guild.get_channel(channel_id)
+            channel = self.bot.get_channel(channel_id)
             if not channel or not isinstance(channel, discord.TextChannel):
                 continue
 
-            # Check bot permissions
-            me = guild.me or guild.get_member(self.bot.user.id)  # fallback
-            if not me:
+            # Track the guild we are pulling from for nicer headers
+            if source_guild is None:
+                source_guild = channel.guild
+
+            # Get the bot's Member object inside that guild for permissions
+            me_member = channel.guild.me or channel.guild.get_member(self.bot.user.id)
+            if me_member is None:
+                try:
+                    me_member = await channel.guild.fetch_member(self.bot.user.id)
+                except Exception:
+                    me_member = None
+            if not me_member:
                 continue
-            permissions = channel.permissions_for(me)
+
+            permissions = channel.permissions_for(me_member)
             if not permissions.read_message_history:
+                # Skip channels where the bot cannot read history
                 continue
 
             messages: List[discord.Message] = []
+            # Pull messages oldest first for stable formatting
             async for message in channel.history(
                 limit=None, after=cutoff_time, oldest_first=True
             ):
-                # Skip bot messages if desired
                 if not message.author.bot:
                     messages.append(message)
 
             if messages:
+                # Use the visible channel name for the header
                 messages_by_channel[channel.name] = messages
 
-        return messages_by_channel
+        return messages_by_channel, source_guild
 
     def format_messages_for_summary(
         self, messages_by_channel: Dict[str, List[discord.Message]]
@@ -196,20 +226,17 @@ class Summarizer(commands.Cog):
         Returns:
             tuple: (formatted_text, dict mapping channel names to first message URLs)
 
-        This now creates markdown-linked "titles" per channel, so clicking the channel
-        header takes you to the first relevant message in that channel.
+        Each channel section starts with a markdown link header that jumps to the first message.
         """
         formatted: List[str] = []
         channel_links: Dict[str, str] = {}
 
         for channel_name, messages in messages_by_channel.items():
-            # Determine the first jump URL for this channel section, if any
             first_jump_url = messages[0].jump_url if messages else None
             if messages:
                 channel_links[channel_name] = first_jump_url
 
             # Channel header with a clickable link to the first message
-            # Example: ## [#general](https://discord.com/channels/...)
             if first_jump_url:
                 formatted.append(f"\n## [#{channel_name}]({first_jump_url})\n")
             else:
@@ -220,15 +247,12 @@ class Summarizer(commands.Cog):
                 timestamp = msg.created_at.strftime("%H:%M")
                 author = msg.author.display_name
                 content = msg.clean_content
-
                 if msg.attachments:
                     content += f" [Attachments: {len(msg.attachments)}]"
-
                 formatted.append(f"[{timestamp}] {author}: {content}")
 
         combined = "\n".join(formatted)
 
-        # Upstream safety cap to avoid sending enormous prompts to the model
         if len(combined) > RAW_MESSAGES_TEXT_CAP:
             combined = (
                 combined[:RAW_MESSAGES_TEXT_CAP]
@@ -239,7 +263,7 @@ class Summarizer(commands.Cog):
     # ---------- Model call and length control ----------
 
     async def generate_summary(self, messages_text: str, hours: int) -> str:
-        """Generate a summary using the model, asking for concision, then apply a hard character cap."""
+        """Generate a summary using the model, then apply a hard character cap."""
         try:
             response = self.openai_client.chat.completions.create(
                 model="gpt-5-mini",
@@ -268,14 +292,12 @@ class Summarizer(commands.Cog):
                         ),
                     },
                 ],
-                # Use max_tokens to bound the model output size
                 max_completion_tokens=2000,
             )
             text = response.choices[0].message.content or ""
         except Exception as e:
             return f"Error generating summary: {str(e)}"
 
-        # Apply a hard cap to guarantee we can split into embeds safely later
         if len(text) > MODEL_SUMMARY_HARD_CAP:
             text = (
                 text[:MODEL_SUMMARY_HARD_CAP]
@@ -287,30 +309,28 @@ class Summarizer(commands.Cog):
 
     @app_commands.command(
         name="summarise",
-        description="Summarize conversations from monitored channels",
+        description="Summarize conversations from monitored main-server channels",
     )
     @app_commands.describe(hours="Number of hours to look back (default: 24)")
     async def summarise(
         self, interaction: discord.Interaction, hours: Optional[int] = 24
     ):
-        """Summarize conversations from the last X hours."""
-        # Validate input
+        """Summarize conversations from the main server channels, regardless of where you run the command."""
         if hours is None:
             hours = 24
-        if hours < 1 or hours > 168:  # Max 1 week
+        if hours < 1 or hours > 168:
             await interaction.response.send_message(
                 "Please specify between 1 and 168 hours (1 week).",
                 ephemeral=True,
             )
             return
 
-        # Defer response as this might take a while
         await interaction.response.defer()
 
         try:
-            # Fetch messages
-            messages_by_channel = await self.fetch_messages_from_channels(
-                interaction.guild, hours
+            # Fetch messages from main-server channels, not from interaction.guild
+            messages_by_channel, source_guild = (
+                await self.fetch_messages_from_main_channels(hours)
             )
 
             if not messages_by_channel:
@@ -319,50 +339,51 @@ class Summarizer(commands.Cog):
                 )
                 return
 
-            # Count total messages
             total_messages = sum(len(msgs) for msgs in messages_by_channel.values())
 
-            # Format messages and get links
+            # Prepare formatted input and per-channel jump links
             messages_text, channel_links = self.format_messages_for_summary(
                 messages_by_channel
             )
 
-            # Generate summary
+            # Ask model for the summary
             summary = await self.generate_summary(messages_text, hours)
 
-            # Build header field values
             channels_value = (
                 ", ".join([f"#{name}" for name in messages_by_channel.keys()]) or "None"
             )
-
-            # Build links text for the header field, individual channel headers in the body are also clickable
             links_text = (
                 " • ".join([f"[#{name}]({url})" for name, url in channel_links.items()])
                 or "None"
             )
 
-            base_title = f"Server Summary, last {hours} hour(s)"
-            # Use an explicit Color object to avoid ambiguity across discord.py versions
+            # Identify source server label for the header
+            source_server_label = "Unknown"
+            if self.main_guild_id:
+                g = self.bot.get_guild(self.main_guild_id)
+                if g:
+                    source_server_label = g.name
+            elif source_guild:
+                source_server_label = source_guild.name
+
+            base_title = (
+                f"Server Summary, last {hours} hour(s) [Source: {source_server_label}]"
+            )
             color = discord.Color(0xFFCD3F)
             ts = datetime.utcnow()
 
-            # Choose a primary link to attach to the embed title itself.
-            # This makes the embed title clickable. We use the first channel link if available.
             primary_link = next(iter(channel_links.values()), None)
 
-            # Prepare header fields for the first embed
             header_fields = {
                 "Channels Analyzed": channels_value,
                 "Total Messages": str(total_messages),
                 "Jump to Conversations": links_text,
             }
 
-            # If summary begins with an error marker, short-circuit
             if summary.startswith("Error generating summary:"):
                 await interaction.followup.send(summary)
                 return
 
-            # Construct embeds with smart chunking and a clickable title URL when available
             embeds = self._build_summary_embeds(
                 base_title=base_title,
                 summary_text=summary,
@@ -372,7 +393,6 @@ class Summarizer(commands.Cog):
                 base_url=primary_link,
             )
 
-            # If we somehow exceeded 10 embeds, attach the rest as a file
             attachments = []
             if len(embeds) > MAX_EMBEDS_PER_MESSAGE:
                 embeds = embeds[:MAX_EMBEDS_PER_MESSAGE]
@@ -382,10 +402,7 @@ class Summarizer(commands.Cog):
                     )
                 )
 
-            # Always consider attaching the complete summary for convenience if it was long
             if len(summary) > EMBED_DESC_MAX:
-                # Add attachment with the full text for easy offline reading
-                # Avoid duplicate attachment if already added above
                 if not any(att.filename == "full_summary.txt" for att in attachments):
                     attachments.append(
                         discord.File(
@@ -394,7 +411,6 @@ class Summarizer(commands.Cog):
                         )
                     )
 
-            # Footer on the last embed
             if embeds:
                 embeds[-1].set_footer(
                     text=f"Requested by {interaction.user.display_name}"
