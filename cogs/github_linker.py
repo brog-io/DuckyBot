@@ -43,6 +43,16 @@ class GithubRolesCog(commands.Cog):
     def cog_unload(self):
         self.weekly_verification.cancel()
 
+    def _get_github_headers(self):
+        """Get GitHub API headers with authentication if token is available"""
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "brogio-discord-link",
+        }
+        if GITHUB_TOKEN:
+            headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+        return headers
+
     @tasks.loop(hours=168)
     async def weekly_verification(self):
         """Weekly task to verify all GitHub roles, remove invalid ones"""
@@ -66,7 +76,7 @@ class GithubRolesCog(commands.Cog):
 
     async def verify_guild_roles(self, guild):
         if not GITHUB_TOKEN:
-            logger.info(
+            logger.warning(
                 f"Skipping verification for {guild.name}, no GitHub token configured"
             )
             return
@@ -76,22 +86,42 @@ class GithubRolesCog(commands.Cog):
         if not stargazer_role:
             return
 
+        removed_count = 0
+        error_count = 0
+
         for member in list(stargazer_role.members):
             try:
                 data = await self.get_github_data(str(member.id))
                 if not data:
+                    logger.warning(f"No GitHub data found for {member.display_name}")
                     continue
-                still_ok = await self.verify_role_qualification(data, "stargazer")
-                if not still_ok:
+
+                result = await self.verify_role_qualification(data, "stargazer")
+
+                if result == "invalid":
                     await member.remove_roles(
                         stargazer_role,
-                        reason="Weekly check, no longer qualifies for stargazer",
+                        reason="Weekly check: no longer qualifies for stargazer",
                     )
+                    removed_count += 1
+                    logger.info(f"Removed stargazer role from {member.display_name}")
                     await asyncio.sleep(1)
+                elif result == "error":
+                    error_count += 1
+                    logger.warning(
+                        f"Could not verify {member.display_name}, keeping role"
+                    )
+                # result == "valid" means they keep the role
+
             except Exception as e:
                 logger.error(f"Error verifying {member.display_name}: {e}")
+                error_count += 1
                 continue
-        logger.info(f"Guild {guild.name}: verification pass complete")
+
+        logger.info(
+            f"Guild {guild.name}: verification complete. "
+            f"Removed: {removed_count}, Errors: {error_count}"
+        )
 
     async def get_github_data(self, discord_id: str):
         try:
@@ -106,31 +136,69 @@ class GithubRolesCog(commands.Cog):
         except Exception:
             return None
 
-    async def verify_role_qualification(self, github_data, role_type: str) -> bool:
+    async def verify_role_qualification(self, github_data, role_type: str) -> str:
+        """
+        Verify if user still qualifies for a role.
+        Returns: "valid", "invalid", or "error"
+        """
         github_username = github_data.get("github_username")
         if not github_username:
-            return False
+            return "invalid"
 
         if role_type == "stargazer":
             return await self.check_stargazer_status(github_username)
-        return False
+        return "invalid"
 
-    async def check_stargazer_status(self, github_username: str) -> bool:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"https://api.github.com/users/{github_username}/starred?per_page=100"
-                ) as resp:
-                    if resp.status == 200:
+    async def check_stargazer_status(self, github_username: str) -> str:
+        """
+        Check if user has starred the repo.
+        Returns: "valid", "invalid", or "error"
+        """
+        max_retries = 3
+        retry_delay = 2
+
+        for attempt in range(max_retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"https://api.github.com/users/{github_username}/starred?per_page=100",
+                        headers=self._get_github_headers(),
+                    ) as resp:
+                        # Rate limited or other API error - don't remove role
+                        if resp.status == 403:
+                            logger.warning(
+                                f"Rate limited checking stars for {github_username} "
+                                f"(attempt {attempt + 1}/{max_retries})"
+                            )
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(retry_delay * (attempt + 1))
+                                continue
+                            return "error"
+
+                        # Other non-200 responses
+                        if resp.status != 200:
+                            logger.warning(
+                                f"GitHub API returned {resp.status} for {github_username}"
+                            )
+                            return "error"
+
                         stars = await resp.json()
-                        return any(
+                        has_starred = any(
                             r.get("full_name", "").lower()
                             == f"{REPO_OWNER}/{REPO_NAME}".lower()
                             for r in stars
                         )
-            return False
-        except Exception:
-            return True
+
+                        return "valid" if has_starred else "invalid"
+
+            except Exception as e:
+                logger.error(f"Exception checking stars for {github_username}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                return "error"
+
+        return "error"
 
     role = app_commands.Group(name="role", description="Get GitHub-related roles")
 
@@ -199,10 +267,7 @@ class GithubRolesCog(commands.Cog):
             )
             return
 
-        gh_headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "brogio-discord-link",
-        }
+        gh_headers = self._get_github_headers()
 
         contributors = []
         page = 1
@@ -300,10 +365,12 @@ class GithubRolesCog(commands.Cog):
 
         starred = False
         page = 1
+        gh_headers = self._get_github_headers()
+
         while page <= 10:
             url = f"https://api.github.com/users/{github_username}/starred?per_page=100&page={page}"
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
+                async with session.get(url, headers=gh_headers) as resp:
                     if resp.status != 200:
                         break
                     stars = await resp.json()
