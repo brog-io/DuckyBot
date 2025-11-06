@@ -253,7 +253,7 @@ class GithubRolesCog(commands.Cog):
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        f"Lookup failed: {resp.status} {await resp.text()}",
+                        "You haven't linked your GitHub account, use `/linkgithub`",
                         ephemeral=True,
                     )
                     return
@@ -349,7 +349,7 @@ class GithubRolesCog(commands.Cog):
             ) as resp:
                 if resp.status != 200:
                     await interaction.followup.send(
-                        f"Lookup failed: {resp.status} {await resp.text()}",
+                        "You haven't linked your GitHub account, use `/linkgithub`",
                         ephemeral=True,
                     )
                     return
