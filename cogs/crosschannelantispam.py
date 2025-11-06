@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import timedelta
 from collections import defaultdict, deque
@@ -6,6 +7,7 @@ from typing import Deque, Dict, Tuple
 import discord
 from discord.ext import commands
 
+# Logger for debug/info messages about spam handling
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +32,7 @@ class CrossChannelAntiSpam(commands.Cog):
         self.window: int = 10
 
         # Store recent messages per user:
+        # user_id -> deque of (timestamp, channel_id, signature, message)
         self.recent_messages: Dict[
             int, Deque[Tuple[float, int, str, discord.Message]]
         ] = defaultdict(lambda: deque(maxlen=30))
@@ -38,8 +41,8 @@ class CrossChannelAntiSpam(commands.Cog):
         """
         Create a signature for a message to detect repeats.
 
-        For attachments, uses filenames.
-        For text, uses normalized content.
+        For attachments, uses concatenated filenames.
+        For text, uses normalized content (lowercased, stripped).
         """
         if message.attachments:
             names = ",".join(a.filename for a in message.attachments)
@@ -55,7 +58,7 @@ class CrossChannelAntiSpam(commands.Cog):
         """
         Listen to all messages and detect cross channel spam.
         """
-        # Ignore direct messages and bot messages.
+        # Ignore bot messages and DMs.
         if message.author.bot:
             return
         if message.guild is None:
@@ -71,12 +74,11 @@ class CrossChannelAntiSpam(commands.Cog):
 
         history = self.recent_messages[user_id]
 
-        # Drop messages outside the time window.
+        # Remove messages outside the time window.
         while history and now - history[0][0] > self.window:
             history.popleft()
 
-        # Count how many recent messages share this signature
-        # and in how many distinct channels they appear.
+        # Count matching signatures and distinct channels.
         similar_count = 0
         channels_seen = set()
 
@@ -85,10 +87,12 @@ class CrossChannelAntiSpam(commands.Cog):
                 similar_count += 1
                 channels_seen.add(ch_id)
 
-        # Record the current message.
+        # Add the current message to history.
         history.append((now, message.channel.id, signature, message))
 
-        # Check if spam threshold is reached with this new message.
+        # Check spam condition:
+        # 1) enough similar messages
+        # 2) across more than one channel
         if similar_count + 1 >= self.threshold:
             all_channels = channels_seen | {message.channel.id}
             if len(all_channels) > 1:
@@ -103,46 +107,67 @@ class CrossChannelAntiSpam(commands.Cog):
         """
         Delete matching spam messages and attempt to timeout the user.
         """
+        member = trigger_message.guild.get_member(trigger_message.author.id)
+
         # Collect all recent messages with the same signature.
         to_delete = [m for (_, _, sig, m) in history if sig == signature]
 
-        # Ensure the triggering message is included.
         if trigger_message not in to_delete:
             to_delete.append(trigger_message)
 
-        # Delete unique messages (avoid duplicate delete attempts).
+        # Deduplicate by ID to avoid double deletes.
         unique_messages = {m.id: m for m in to_delete}.values()
 
         for msg in unique_messages:
             try:
                 await msg.delete()
             except discord.HTTPException:
-                # If delete fails, continue with others.
-                pass
+                # If deletion fails (missing perms or already deleted), skip it.
+                logger.debug(
+                    "Failed to delete spam message %s in #%s",
+                    msg.id,
+                    getattr(msg.channel, "name", "?"),
+                )
 
-        # Attempt to timeout the member.
-        member = trigger_message.guild.get_member(trigger_message.author.id)
         if member is None:
+            logger.debug(
+                "Cannot timeout user for spam, member not found in guild: %s",
+                trigger_message.author.id,
+            )
             return
 
-        # Ensure the bot can moderate members.
         me = trigger_message.guild.me
         if me is None:
+            logger.debug("Cannot resolve self member in guild for spam handling.")
             return
 
+        # Check permission to timeout.
         if not me.guild_permissions.moderate_members:
+            logger.debug(
+                "Missing 'Moderate Members' permission to timeout user %s",
+                member.id,
+            )
             return
 
-        # Ensure role hierarchy allows timeout.
+        # Check role hierarchy.
         if member.top_role >= me.top_role:
+            logger.debug("Cannot timeout user %s due to role hierarchy.", member.id)
             return
 
-        # Apply a 5 minute timeout.
+        # Apply timeout.
         try:
             until = discord.utils.utcnow() + timedelta(minutes=5)
             await member.timeout(until, reason="Cross channel spam detected")
+            logger.info(
+                "Timed out user %s for cross channel spam.",
+                member.id,
+            )
         except Exception as e:
-            pass
+            logger.warning(
+                "Failed to timeout user %s for spam: %s",
+                member.id,
+                e,
+            )
 
 
 async def setup(bot: commands.Bot):
