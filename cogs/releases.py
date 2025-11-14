@@ -11,13 +11,11 @@ from discord.ext import commands, tasks
 # ------------------------------
 OWNER = "ente-io"
 REPO = "ente"
-CHANNEL_ID = 953689741432340540  # set your channel ID here
+CHANNEL_ID = 953689741432340540
 POLL_INTERVAL_SECONDS = 600  # check every 600 seconds (10 minutes)
 STATE_FILE = "photos_release_state.json"
 
-GITHUB_TOKEN = os.environ.get(
-    "GITHUB_TOKEN"
-)  # optional token for GitHub API rate limits
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # optional; higher rate limits if set
 
 
 # ------------------------------
@@ -49,9 +47,9 @@ def choose_apk_asset(release: dict) -> dict | None:
 
 
 # ------------------------------
-# Components v2 layout view
+# View with buttons (legacy) using discord.ui.View
 # ------------------------------
-class PhotosReleaseLayout(discord.ui.LayoutView):
+class PhotosReleaseView(discord.ui.View):
     def __init__(self, owner: str, repo: str, release: dict):
         super().__init__(timeout=None)
         self.owner = owner
@@ -70,6 +68,7 @@ class PhotosReleaseLayout(discord.ui.LayoutView):
         if asset:
             self.asset_url = asset.get("browser_download_url")
             asset_name = asset.get("name", "download.apk")
+            # custom_id for callback button
             self.add_item(
                 discord.ui.Button(
                     label=f"Download {asset_name}",
@@ -85,7 +84,7 @@ class PhotosReleaseLayout(discord.ui.LayoutView):
         style=discord.ButtonStyle.primary,
         custom_id="download_photos_apk",
     )
-    async def download_apk(
+    async def download_button_callback(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         if not self.asset_url:
@@ -141,9 +140,8 @@ class EntePhotosReleaseCog(commands.Cog):
         self.check_task.cancel()
 
     def load_state(self):
-        """Load state from JSON file (create if not exists)."""
+        """Load state from JSON (or create default)."""
         if not os.path.exists(STATE_FILE):
-            # create default state
             self.state = {"last_tag": ""}
             with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=2)
@@ -151,7 +149,6 @@ class EntePhotosReleaseCog(commands.Cog):
             try:
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     self.state = json.load(f)
-                # ensure last_tag present
                 if "last_tag" not in self.state:
                     self.state["last_tag"] = ""
             except Exception as e:
@@ -159,7 +156,7 @@ class EntePhotosReleaseCog(commands.Cog):
                 self.state = {"last_tag": ""}
 
     def save_state(self):
-        """Persist state back to JSON file."""
+        """Save state back to JSON file."""
         try:
             with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=2)
@@ -207,7 +204,7 @@ class EntePhotosReleaseCog(commands.Cog):
                     )
                 embed.set_footer(text="Source: GitHub Releases")
 
-                view = PhotosReleaseLayout(OWNER, REPO, latest)
+                view = PhotosReleaseView(OWNER, REPO, latest)
 
                 body_text = latest.get("body") or ""
                 filename = f"{OWNER}-{REPO}-{latest_tag}-notes.txt"
@@ -216,14 +213,9 @@ class EntePhotosReleaseCog(commands.Cog):
 
                 await channel.send(embed=embed, view=view, file=notes_file)
 
-            # update state and persist
+            # Update state
             self.state["last_tag"] = latest_tag
             self.save_state()
-
-    async def cog_load(self):
-        # On cog load you might want to trigger an immediate check (optional)
-        # await self.check_task.invoke()  # if you want to run immediately
-        pass
 
 
 async def setup(bot: commands.Bot):
