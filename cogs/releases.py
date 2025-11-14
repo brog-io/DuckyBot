@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import asyncio
 import aiohttp
 import discord
@@ -10,11 +11,13 @@ from discord.ext import commands, tasks
 # ------------------------------
 OWNER = "ente-io"
 REPO = "ente"
-CHANNEL_ID = 953689741432340540
+CHANNEL_ID = 953689741432340540  # set your channel ID here
 POLL_INTERVAL_SECONDS = 600  # check every 600 seconds (10 minutes)
-STATE_FILE = "last_photos_release.txt"
+STATE_FILE = "photos_release_state.json"
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_TOKEN = os.environ.get(
+    "GITHUB_TOKEN"
+)  # optional token for GitHub API rate limits
 
 
 # ------------------------------
@@ -130,11 +133,38 @@ class EntePhotosReleaseCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.last_tag = ""
+        self.state = {}
+        self.load_state()
         self.check_task.start()
 
     def cog_unload(self):
         self.check_task.cancel()
+
+    def load_state(self):
+        """Load state from JSON file (create if not exists)."""
+        if not os.path.exists(STATE_FILE):
+            # create default state
+            self.state = {"last_tag": ""}
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2)
+        else:
+            try:
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    self.state = json.load(f)
+                # ensure last_tag present
+                if "last_tag" not in self.state:
+                    self.state["last_tag"] = ""
+            except Exception as e:
+                print(f"[EntePhotosReleaseCog] Failed to load state file: {e}")
+                self.state = {"last_tag": ""}
+
+    def save_state(self):
+        """Persist state back to JSON file."""
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2)
+        except Exception as e:
+            print(f"[EntePhotosReleaseCog] Failed to save state file: {e}")
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def check_task(self):
@@ -154,14 +184,7 @@ class EntePhotosReleaseCog(commands.Cog):
         latest = photos[0]
         latest_tag = latest.get("tag_name")
 
-        if not self.last_tag:
-            if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    self.last_tag = f.read().strip()
-            else:
-                self.last_tag = ""
-
-        if latest_tag != self.last_tag:
+        if latest_tag and latest_tag != self.state.get("last_tag"):
             channel = self.bot.get_channel(CHANNEL_ID)
             if channel:
                 embed = discord.Embed(
@@ -193,12 +216,14 @@ class EntePhotosReleaseCog(commands.Cog):
 
                 await channel.send(embed=embed, view=view, file=notes_file)
 
-            self.last_tag = latest_tag
-            try:
-                with open(STATE_FILE, "w", encoding="utf-8") as f:
-                    f.write(latest_tag)
-            except Exception as e:
-                print(f"[EntePhotosReleaseCog] Failed to write state file: {e}")
+            # update state and persist
+            self.state["last_tag"] = latest_tag
+            self.save_state()
+
+    async def cog_load(self):
+        # On cog load you might want to trigger an immediate check (optional)
+        # await self.check_task.invoke()  # if you want to run immediately
+        pass
 
 
 async def setup(bot: commands.Bot):
