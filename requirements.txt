@@ -1,4 +1,4 @@
-discord.py==2.4.0
+discord.py==2.6
 aiohttp==3.12.14
 python-dotenv==1.0.1
 openai==1.59.6
