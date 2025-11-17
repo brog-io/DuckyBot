@@ -340,7 +340,7 @@ class SelfHelp(commands.Cog):
                     else "`/unsolve`"
                 )
                 await message.reply(
-                    f"-# If your issue is resolved, you can use the {solved_hint} command to close the thread. If not, use {unsolve_hint} to cancel.",
+                    f"-# <:cornerdownright:1439928795875512330> If your issue is resolved, you can use the {solved_hint} command to close the thread. If not, use {unsolve_hint} to cancel.",
                     mention_author=True,
                 )
                 self.hint_sent_threads.add(message.channel.id)
