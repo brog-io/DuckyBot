@@ -142,7 +142,7 @@ class ServerManager(commands.Cog):
             roles_view.add_item(
                 Button(
                     label="Edit Roles",
-                    emoji=":roles:1316036079379288094",
+                    emoji=":roles:1439925796209950792",
                     url="https://discord.com/channels/948937918347608085/customize-community",
                 )
             )
