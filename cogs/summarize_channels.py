@@ -46,6 +46,7 @@ class Summarizer(commands.Cog):
             948937919027105865,
             1051153671985045514,
             953968250553765908,
+            1439920913096380537,
         ]
 
         # Initialize OpenAI client
