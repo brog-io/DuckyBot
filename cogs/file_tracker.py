@@ -24,7 +24,7 @@ class RefreshButton(Button):
             label="Refresh Count",
             style=discord.ButtonStyle.primary,
             custom_id="refresh_count",
-            emoji=":refresh:1439925070817398836",
+            emoji=":refresh:1439928076195860613",
         )
 
     async def callback(self, interaction: discord.Interaction):
