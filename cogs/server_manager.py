@@ -96,13 +96,15 @@ class ServerManager(commands.Cog):
             view = View()
             view.add_item(
                 Button(
-                    label="Roles", emoji=":roles:1316036079379288094", custom_id="Roles"
+                    label="Roles",
+                    emoji=":roles:1439925796209950792",
+                    custom_id="Roles",
                 )
             )
             view.add_item(
                 Button(
                     label="Channels",
-                    emoji=":channels:1316036119481290802",
+                    emoji=":channels:1439925833773875241",
                     custom_id="Channels",
                 )
             )
