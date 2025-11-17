@@ -97,14 +97,14 @@ class ServerManager(commands.Cog):
             view.add_item(
                 Button(
                     label="Roles",
-                    emoji=":roles:1439925796209950792",
+                    emoji=":roles:1439927556202823712",
                     custom_id="Roles",
                 )
             )
             view.add_item(
                 Button(
                     label="Channels",
-                    emoji=":channels:1439925833773875241",
+                    emoji=":channels:1439927871698239578",
                     custom_id="Channels",
                 )
             )
@@ -142,7 +142,7 @@ class ServerManager(commands.Cog):
             roles_view.add_item(
                 Button(
                     label="Edit Roles",
-                    emoji=":roles:1439925796209950792",
+                    emoji=":roles:1439927556202823712",
                     url="https://discord.com/channels/948937918347608085/customize-community",
                 )
             )
