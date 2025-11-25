@@ -1,0 +1,357 @@
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+import aiomysql
+import json
+import logging
+from datetime import datetime, timezone, timedelta
+import os
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+load_dotenv()
+
+LEADERBOARD_CHANNEL_ID = 1377185231995666542
+GUILD_ID = 948937918347608085
+
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
+
+
+class MessageTracker(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.cache_path = "leaderboard_cache.json"
+        self.pinned_message_ids = {}
+        self.db_pool = None
+        bot.loop.create_task(self._init_everything())
+
+    async def _get_pool(self):
+        if self.db_pool is None:
+            self.db_pool = await aiomysql.create_pool(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                db=MYSQL_DATABASE,
+                autocommit=True,
+                charset="utf8mb4",
+            )
+        return self.db_pool
+
+    async def _init_everything(self):
+        await self.bot.wait_until_ready()
+        await self._init_db()
+        await self._ensure_pinned_messages()
+        if not self.update_leaderboards.is_running():
+            self.update_leaderboards.start()
+
+    async def _init_db(self):
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        timestamp DATETIME NOT NULL
+                    )
+                    """
+                )
+
+    async def _ensure_pinned_messages(self):
+        try:
+            with open(self.cache_path, "r") as f:
+                self.pinned_message_ids = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.pinned_message_ids = {}
+
+        channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
+        if not channel:
+            logger.warning(f"Channel {LEADERBOARD_CHANNEL_ID} not found.")
+            return
+
+        needed = {
+            "forever": "🏆 Forever Leaderboard",
+            "monthly": "📅 Monthly Leaderboard",
+            "weekly": "📆 Weekly Leaderboard",
+        }
+
+        for key, title in needed.items():
+            if key not in self.pinned_message_ids:
+                msg = await channel.send(f"{title}\nLoading...")
+                await msg.pin()
+                self.pinned_message_ids[key] = msg.id
+
+        with open(self.cache_path, "w") as f:
+            json.dump(self.pinned_message_ids, f)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Only track messages from bots and from the specified guild
+        if message.author.bot:
+            return
+
+        # Check if message is from the target guild
+        if not message.guild or message.guild.id != GUILD_ID:
+            return
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "INSERT INTO messages (user_id, timestamp) VALUES (%s, %s)",
+                    (message.author.id, now),
+                )
+
+    async def _fetch_leaderboard(self, mode: str):
+        now = datetime.now(timezone.utc)
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                if mode == "forever":
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                        LIMIT 10
+                    """
+                    await cursor.execute(query)
+                elif mode == "monthly":
+                    start_month = now.replace(
+                        day=1, hour=0, minute=0, second=0, microsecond=0
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        WHERE timestamp >= %s
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                        LIMIT 10
+                    """
+                    await cursor.execute(query, (start_month,))
+                elif mode == "weekly":
+                    start_week = now - timedelta(days=now.weekday())
+                    start_week = start_week.replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    query = """
+                        SELECT user_id, COUNT(*) as count
+                        FROM messages
+                        WHERE timestamp >= %s
+                        GROUP BY user_id
+                        ORDER BY count DESC
+                        LIMIT 10
+                    """
+                    await cursor.execute(query, (start_week,))
+                else:
+                    return []
+                return await cursor.fetchall()
+
+    async def _build_mode_embed(self, mode: str):
+        leaderboard = await self._fetch_leaderboard(mode)
+        if not leaderboard:
+            return discord.Embed(title="No data yet.", color=discord.Color.red())
+
+        titles = {
+            "forever": "🏆 All-Time Leaderboard",
+            "monthly": "📅 Monthly Leaderboard",
+            "weekly": "📆 Weekly Leaderboard",
+        }
+
+        embed = discord.Embed(title=titles.get(mode, "Leaderboard"), color=0xFFCD3F)
+
+        try:
+            top_user_id = leaderboard[0][0]
+            top_user = await self.bot.fetch_user(top_user_id)
+            embed.set_thumbnail(url=top_user.display_avatar.url)
+        except (IndexError, discord.NotFound):
+            pass
+
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (user_id, count) in enumerate(leaderboard, start=1):
+            try:
+                user = await self.bot.fetch_user(user_id)
+                medal = medals[i - 1] if i <= 3 else f"#{i}"
+                embed.add_field(
+                    name=f"{medal} **{user.display_name}**",
+                    value=f"> {count} messages",
+                    inline=False,
+                )
+            except discord.NotFound:
+                continue
+
+        embed.set_footer(text="Leaderboard based on real message counts.")
+        return embed
+
+    @app_commands.command(
+        name="leaderboard", description="Show the top users by messages"
+    )
+    async def leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        embed = await self._build_mode_embed("forever")
+        view = self.LeaderboardView(self)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    class LeaderboardView(discord.ui.View):
+        def __init__(self, cog):
+            super().__init__(timeout=None)
+            self.cog = cog
+
+        @discord.ui.select(
+            placeholder="Select timeframe",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="All-Time", value="forever", emoji="🏆"),
+                discord.SelectOption(label="Monthly", value="monthly", emoji="📅"),
+                discord.SelectOption(label="Weekly", value="weekly", emoji="📆"),
+            ],
+            custom_id="leaderboard_timeframe_select",
+        )
+        async def select_timeframe(
+            self, interaction: discord.Interaction, select: discord.ui.Select
+        ):
+            mode = select.values[0]
+            embed = await self.cog._build_mode_embed(mode)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @app_commands.command(
+        name="rank", description="Show your rank and message count in the leaderboards."
+    )
+    @app_commands.describe(user="The user to check the rank for (optional)")
+    async def rank(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User = None,
+    ):
+        user = user or interaction.user
+
+        # Helper for ranking
+        async def get_rank_and_count(mode: str):
+            now = datetime.now(timezone.utc)
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    if mode == "forever":
+                        query = """
+                            SELECT user_id, COUNT(*) as count
+                            FROM messages
+                            GROUP BY user_id
+                            ORDER BY count DESC
+                        """
+                        await cursor.execute(query)
+                    elif mode == "monthly":
+                        start_month = now.replace(
+                            day=1, hour=0, minute=0, second=0, microsecond=0
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        query = """
+                            SELECT user_id, COUNT(*) as count
+                            FROM messages
+                            WHERE timestamp >= %s
+                            GROUP BY user_id
+                            ORDER BY count DESC
+                        """
+                        await cursor.execute(query, (start_month,))
+                    elif mode == "weekly":
+                        start_week = now - timedelta(days=now.weekday())
+                        start_week = start_week.replace(
+                            hour=0, minute=0, second=0, microsecond=0
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        query = """
+                            SELECT user_id, COUNT(*) as count
+                            FROM messages
+                            WHERE timestamp >= %s
+                            GROUP BY user_id
+                            ORDER BY count DESC
+                        """
+                        await cursor.execute(query, (start_week,))
+                    else:
+                        return None, 0
+
+                    leaderboard = await cursor.fetchall()
+                    for i, (user_id, count) in enumerate(leaderboard, start=1):
+                        if user_id == user.id:
+                            return i, count
+                    return None, 0
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = discord.Embed(title=f"📊 Rank for {user.display_name}", color=0xFFCD3F)
+
+        # All leaderboard types
+        modes = [
+            ("forever", "🏆 All-Time"),
+            ("monthly", "📅 Monthly"),
+            ("weekly", "📆 Weekly"),
+        ]
+
+        for mode, mode_name in modes:
+            rank, count = await get_rank_and_count(mode)
+            if rank:
+                embed.add_field(
+                    name=mode_name,
+                    value=f"Rank: **#{rank}**\nMessages: **{count}**",
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name=mode_name, value="Not ranked (no messages).", inline=False
+                )
+
+        embed.set_footer(text="Rank is recalculated every 10 minutes.")
+
+        try:
+            embed.set_thumbnail(url=user.display_avatar.url)
+        except Exception:
+            pass
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @tasks.loop(minutes=10)
+    async def update_leaderboards(self):
+        try:
+            await self.bot.wait_until_ready()
+            channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
+            if not channel:
+                logger.warning(
+                    f"Leaderboard channel {LEADERBOARD_CHANNEL_ID} not found."
+                )
+                return
+            for mode, msg_id in self.pinned_message_ids.items():
+                try:
+                    msg = await channel.fetch_message(msg_id)
+                    embed = await self._build_mode_embed(mode)
+                    await msg.edit(content=None, embed=embed)
+                except discord.NotFound:
+                    logger.warning(
+                        f"Leaderboard message ID {msg_id} not found. Skipping."
+                    )
+                except Exception as e:
+                    import traceback
+
+                    logger.error(f"Exception in update_leaderboards (mode {mode}): {e}")
+                    traceback.print_exc()
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Fatal exception in update_leaderboards: {e}")
+            traceback.print_exc()
+
+    @update_leaderboards.error
+    async def update_leaderboards_error(self, error):
+        logger.error(f"Leaderboard update loop error: {error}")
+
+    def cog_unload(self):
+        if self.update_leaderboards.is_running():
+            self.update_leaderboards.cancel()
+
+
+async def setup(bot: commands.Bot):
+    cog = MessageTracker(bot)
+    await bot.add_cog(cog)
+    bot.add_view(cog.LeaderboardView(cog))
