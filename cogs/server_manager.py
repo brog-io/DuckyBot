@@ -86,11 +86,7 @@ class ServerManager(commands.Cog):
 
     def _welcome_components_v2(self) -> list:
         """Build the Components V2 payload (top-level components array) for the welcome message."""
-        banner_url = (
-            "https://images-ext-1.discordapp.net/external/"
-            "AuEowaRQWXAAS80ilWitGttrcF_u1MetYh2ArvjkXuE/"
-            "https/i.imgur.com/wlZ8Kw4.png?format=webp&quality=lossless&width=1307&height=642"
-        )
+        banner_url = "https://cdn.discordapp.com/attachments/953689741432340540/1443251643071201320/Big_32.png?ex=69286456&is=692712d6&hm=acd692017aa9de91fad1e2ecdea9f2277a81dcd9ab4d5bd76f4274ac184a4b9f&"
 
         container = {
             "type": 17,  # Container
