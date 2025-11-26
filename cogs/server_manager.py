@@ -2,60 +2,52 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 from discord import app_commands
+from discord.http import Route
 import re
 import logging
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# --------- Config ---------
+WELCOME_CHANNEL_ID = 953697188544925756
 TARGET_CHANNEL_ID = 1025978742318833684
 AUTO_THREAD_REACTIONS = ["⭐"]
 
+# Message flag: IS_COMPONENTS_V2 (1 << 15)
+MESSAGE_FLAG_IS_COMPONENTS_V2 = 1 << 15
+
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+# Custom emoji IDs used in your server
+ROLES_EMOJI_ID = 1439927556202823712
+CHANNELS_EMOJI_ID = 1439927871698239578
 
 
 def is_image_attachment(attachment: discord.Attachment) -> bool:
-    """
-    Determines if an attachment is an image.
-
-    Args:
-        attachment (discord.Attachment): The attachment to check.
-
-    Returns:
-        bool: True if the attachment is an image, False otherwise.
-    """
-    if hasattr(attachment, "content_type") and attachment.content_type:
+    """Return True if an attachment is an image (via content_type or file extension fallback)."""
+    if getattr(attachment, "content_type", None):
         return attachment.content_type.startswith("image/")
     return attachment.url.lower().endswith(IMAGE_EXTENSIONS)
 
 
-class MessageLinkButton(Button):
-    """
-    A button that links to the referenced Discord message.
-    """
-
-    def __init__(self, url: str):
-        """
-        Initialize the message link button.
-
-        Args:
-            url (str): The URL of the Discord message.
-        """
-        super().__init__(label="Go to Message", url=url, style=discord.ButtonStyle.link)
+def _safe_text(s: Optional[str], max_len: int = 1800) -> str:
+    """Trim text to a safe size for display; keeps markdown but avoids huge payloads."""
+    if not s:
+        return ""
+    s = s.strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
 
 
 class ServerManager(commands.Cog):
     """
-    Manages server onboarding, information messages, message link previews,
+    Manages server onboarding, components-v2 welcome message, message link previews,
     automatic publishing of announcement messages, and auto-thread creation.
     """
 
-    def __init__(self, bot):
-        """
-        Initialize the ServerManager cog.
-
-        Args:
-            bot (commands.Bot): The Discord bot instance.
-        """
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.message_link_pattern = re.compile(
             r"https?:\/\/(?:.*\.)?discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)"
@@ -63,65 +55,220 @@ class ServerManager(commands.Cog):
         self.target_channel_id = TARGET_CHANNEL_ID
         self.reactions = AUTO_THREAD_REACTIONS
 
+    async def _send_components_v2_message(
+        self,
+        channel_id: int,
+        *,
+        components: list,
+        allowed_mentions: Optional[dict] = None,
+        message_reference: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send a Components V2 message by calling Discord's REST API directly.
+        discord.py does not (currently) provide first-class builders for these component types.
+
+        This intentionally does not send `content` or `embeds`, because IS_COMPONENTS_V2
+        disables them.
+        """
+        payload: Dict[str, Any] = {
+            "flags": MESSAGE_FLAG_IS_COMPONENTS_V2,
+            "components": components,
+        }
+
+        if allowed_mentions is not None:
+            payload["allowed_mentions"] = allowed_mentions
+
+        if message_reference is not None:
+            payload["message_reference"] = message_reference
+
+        route = Route("POST", "/channels/{channel_id}/messages", channel_id=channel_id)
+        return await self.bot.http.request(route, json=payload)
+
+    def _welcome_components_v2(self) -> list:
+        """Build the Components V2 payload (top-level components array) for the welcome message."""
+        banner_url = (
+            "https://images-ext-1.discordapp.net/external/"
+            "AuEowaRQWXAAS80ilWitGttrcF_u1MetYh2ArvjkXuE/"
+            "https/i.imgur.com/wlZ8Kw4.png?format=webp&quality=lossless&width=1307&height=642"
+        )
+
+        container = {
+            "type": 17,  # Container
+            "accent_color": 0xFFCD3F,
+            "spoiler": False,
+            "components": [
+                {
+                    "type": 12,  # Media Gallery
+                    "items": [
+                        {
+                            "media": {"url": banner_url},
+                            "description": None,
+                            "spoiler": False,
+                        }
+                    ],
+                },
+                {
+                    "type": 14,  # Separator
+                    "spacing": 2,
+                    "divider": True,
+                },
+                {
+                    "type": 10,  # Text Display (markdown)
+                    "content": (
+                        "# Welcome to the Ente Community!\n"
+                        "Explore our privacy-first services:\n"
+                        "**Ente Photos**: Secure, private photo storage.\n"
+                        "**Ente Auth**: Easy, privacy-focused authentication.\n\n"
+                        "We’re glad to have you here! 🔐"
+                    ),
+                },
+                {
+                    "type": 14,  # Separator
+                    "spacing": 1,
+                    "divider": True,
+                },
+                {
+                    "type": 10,  # Text Display (markdown)
+                    "content": (
+                        "## Community Guidelines\n"
+                        "• **Respect Privacy**: No sharing of personal information.\n"
+                        "• **Be Kind**: Keep interactions respectful and constructive.\n"
+                        "• **Stay On Topic**: Use the right channels for your discussions.\n"
+                        "• **No Spam**: Avoid posting irrelevant or repetitive content.\n"
+                        "• **Follow Guidelines**: Abide by the community and platform rules."
+                    ),
+                },
+            ],
+        }
+
+        # Action row with your buttons (still valid in Components V2 messages)
+        action_row = {
+            "type": 1,  # Action Row
+            "components": [
+                {
+                    "type": 2,  # Button
+                    "style": 2,  # Secondary
+                    "label": "Roles",
+                    "custom_id": "Roles",
+                    "emoji": {"id": str(ROLES_EMOJI_ID), "name": "roles"},
+                },
+                {
+                    "type": 2,  # Button
+                    "style": 2,  # Secondary
+                    "label": "Channels",
+                    "custom_id": "Channels",
+                    "emoji": {"id": str(CHANNELS_EMOJI_ID), "name": "channels"},
+                },
+                {
+                    "type": 2,  # Button
+                    "style": 5,  # Link
+                    "label": "Website",
+                    "url": "https://ente.io",
+                },
+            ],
+        }
+
+        return [container, action_row]
+
+    def _message_link_preview_components_v2(
+        self,
+        *,
+        author_name: str,
+        author_avatar_url: str,
+        message_content: str,
+        created_at_iso: str,
+        jump_url: str,
+        image_url: Optional[str],
+    ) -> list:
+        """
+        Build a Components V2 preview for a referenced Discord message, plus a link button.
+        """
+        header = f"**{author_name}**\n-# {created_at_iso}\n"
+        body = message_content if message_content else "*[No content]*"
+        body = _safe_text(body, max_len=1800)
+
+        container_components = [
+            {
+                "type": 10,  # Text Display
+                "content": header + body,
+            }
+        ]
+
+        if image_url:
+            container_components.append(
+                {
+                    "type": 14,  # Separator
+                    "spacing": 1,
+                    "divider": True,
+                }
+            )
+            container_components.append(
+                {
+                    "type": 12,  # Media Gallery
+                    "items": [
+                        {
+                            "media": {"url": image_url},
+                            "description": None,
+                            "spoiler": False,
+                        }
+                    ],
+                }
+            )
+
+        container = {
+            "type": 17,  # Container
+            "accent_color": 0xFFCD3F,
+            "spoiler": False,
+            "components": container_components[:10],  # container limit safety
+        }
+
+        action_row = {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 5,  # Link
+                    "label": "Go to Message",
+                    "url": jump_url,
+                }
+            ],
+        }
+
+        return [container, action_row]
+
     @app_commands.command(name="welcome")
     @app_commands.default_permissions(administrator=True)
     async def send_welcome(self, interaction: discord.Interaction):
-        """
-        Sends a welcome message in the configured welcome channel with community info and navigation buttons.
-
-        Args:
-            interaction (discord.Interaction): The interaction for the command.
-        """
-        channel = self.bot.get_channel(953697188544925756)
-        if channel:
-            embed = discord.Embed(
-                title="Welcome to the Ente Community!",
-                description=(
-                    "## Explore our privacy-first services:\n"
-                    "**Ente Photos**: Secure, private photo storage.\n"
-                    "**Ente Auth**: Easy, privacy-focused authentication.\n\n"
-                    "We’re glad to have you here! 🔐\n"
-                    "## Community Guidelines:\n"
-                    "• **Respect Privacy**: No sharing of personal information.\n"
-                    "• **Be Kind**: Keep interactions respectful and constructive.\n"
-                    "• **Stay On Topic**: Use the right channels for your discussions.\n"
-                    "• **No Spam**: Avoid posting irrelevant or repetitive content.\n"
-                    "• **Follow Guidelines**: Abide by the community and platform rules.\n"
-                ),
-                color=0xFFCD3F,
+        """Sends a Components V2 welcome message in the configured welcome channel."""
+        try:
+            await self._send_components_v2_message(
+                WELCOME_CHANNEL_ID,
+                components=self._welcome_components_v2(),
+                allowed_mentions={"parse": []},
             )
-            embed.set_image(
-                url="https://images-ext-1.discordapp.net/external/AuEowaRQWXAAS80ilWitGttrcF_u1MetYh2ArvjkXuE/https/i.imgur.com/wlZ8Kw4.png?format=webp&quality=lossless&width=1307&height=642"
+            await interaction.response.send_message(
+                "Welcome message sent.", ephemeral=True
             )
-            view = View()
-            view.add_item(
-                Button(
-                    label="Roles",
-                    emoji=":roles:1439927556202823712",
-                    custom_id="Roles",
+        except discord.HTTPException as e:
+            logger.error(f"Failed to send Components V2 welcome: {e}")
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "Failed to send welcome message.", ephemeral=True
                 )
-            )
-            view.add_item(
-                Button(
-                    label="Channels",
-                    emoji=":channels:1439927871698239578",
-                    custom_id="Channels",
+            else:
+                await interaction.response.send_message(
+                    "Failed to send welcome message.", ephemeral=True
                 )
-            )
-            view.add_item(Button(label="Website", url="https://ente.io"))
-            await channel.send(embed=embed, view=view)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        """
-        Handles button interactions for information messages.
-
-        Args:
-            interaction (discord.Interaction): The interaction event triggered by a button click.
-        """
+        """Handles button interactions for information messages."""
         if interaction.type != discord.InteractionType.component:
             return
-        if interaction.data.get("custom_id") == "Roles":
+
+        data = interaction.data or {}
+        custom_id = data.get("custom_id")
+        if custom_id == "Roles":
             roles_embed = discord.Embed(
                 description=(
                     "# Community Roles\n"
@@ -138,18 +285,20 @@ class ServerManager(commands.Cog):
                 ),
                 color=0xFFCD3F,
             )
+
             roles_view = View()
             roles_view.add_item(
                 Button(
                     label="Edit Roles",
-                    emoji=":roles:1439927556202823712",
+                    emoji=discord.PartialEmoji(name="roles", id=ROLES_EMOJI_ID),
                     url="https://discord.com/channels/948937918347608085/customize-community",
                 )
             )
             await interaction.response.send_message(
                 embed=roles_embed, view=roles_view, ephemeral=True
             )
-        elif interaction.data.get("custom_id") == "Channels":
+
+        elif custom_id == "Channels":
             channels_embed = discord.Embed(
                 description=(
                     "- 👋 **WELCOME**\n"
@@ -178,15 +327,11 @@ class ServerManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """
-        Processes new messages for auto-publishing, message link previews, and auto-threading for images.
-
-        Args:
-            message (discord.Message): The received message object.
-        """
+        """Processes new messages for auto-publishing, message link previews, and auto-threading for images."""
         if message.author.bot:
             return
 
+        # Auto-publish in announcement channels
         if (
             isinstance(message.channel, discord.TextChannel)
             and message.channel.is_news()
@@ -202,27 +347,25 @@ class ServerManager(commands.Cog):
                 )
             except discord.HTTPException as e:
                 logger.error(
-                    f"Failed to publish message in {message.channel.name} (ID: {message.channel.id}): {str(e)}"
+                    f"Failed to publish message in {message.channel.name} (ID: {message.channel.id}): {e}"
                 )
 
+        # Components V2 message-link preview for discord.com/channels/... links
         for match in self.message_link_pattern.finditer(message.content):
-            guild_id, channel_id, message_id = match.groups()
+            _, channel_id, message_id = match.groups()
             try:
                 channel = self.bot.get_channel(int(channel_id))
-                if not channel:
+                if channel is None:
+                    channel = await self.bot.fetch_channel(int(channel_id))
+
+                if not isinstance(channel, (discord.TextChannel, discord.Thread)):
                     continue
+
                 referenced_message = await channel.fetch_message(int(message_id))
-                if not referenced_message:
+                if referenced_message is None:
                     continue
-                embed = discord.Embed(
-                    description=referenced_message.content or "*[No content]*",
-                    timestamp=referenced_message.created_at,
-                    color=0xFFCD3F,
-                )
-                embed.set_author(
-                    name=referenced_message.author.display_name,
-                    icon_url=referenced_message.author.display_avatar.url,
-                )
+
+                image_url = None
                 img = next(
                     (
                         a
@@ -232,24 +375,53 @@ class ServerManager(commands.Cog):
                     None,
                 )
                 if img:
-                    embed.set_image(url=img.url)
-                view = View()
-                view.add_item(MessageLinkButton(match.group(0)))
-                await message.reply(embed=embed, view=view, mention_author=False)
+                    image_url = img.url
+
+                comps = self._message_link_preview_components_v2(
+                    author_name=referenced_message.author.display_name,
+                    author_avatar_url=referenced_message.author.display_avatar.url,
+                    message_content=referenced_message.content or "",
+                    created_at_iso=referenced_message.created_at.isoformat(),
+                    jump_url=match.group(0),
+                    image_url=image_url,
+                )
+
+                await self._send_components_v2_message(
+                    message.channel.id,
+                    components=comps,
+                    allowed_mentions={"parse": []},
+                    message_reference={
+                        "message_id": message.id,
+                        "channel_id": message.channel.id,
+                        "guild_id": message.guild.id if message.guild else None,
+                        "fail_if_not_exists": False,
+                    },
+                )
+
+            except discord.Forbidden:
+                logger.warning("Missing permissions to fetch message or post preview.")
+            except discord.NotFound:
+                logger.warning("Referenced message/channel not found.")
+            except discord.HTTPException as e:
+                logger.error(f"HTTP error while sending v2 preview: {e}")
             except Exception as e:
                 logger.error(f"Error processing message link: {e}")
 
-        if message.channel.id == self.target_channel_id and not message.author.bot:
-            has_image = any(
-                is_image_attachment(attachment) for attachment in message.attachments
-            )
+        # Auto-thread images in the target channel, delete non-image posts
+        if message.channel.id == self.target_channel_id:
+            has_image = any(is_image_attachment(a) for a in message.attachments)
+
             if has_image:
                 for reaction in self.reactions:
-                    await message.add_reaction(reaction)
+                    try:
+                        await message.add_reaction(reaction)
+                    except discord.HTTPException:
+                        pass
+
                 try:
                     thread = await message.create_thread(
                         name=(
-                            f"Discussion: {message.content[:30]}..."
+                            f"Discussion: {_safe_text(message.content, 30)}..."
                             if message.content
                             else "Discussion"
                         )
@@ -261,6 +433,7 @@ class ServerManager(commands.Cog):
                     logger.error("Bot lacks permissions to create threads.")
                 except discord.HTTPException as e:
                     logger.error(f"Failed to create thread: {e}")
+
             else:
                 try:
                     await message.delete()
@@ -272,11 +445,6 @@ class ServerManager(commands.Cog):
                     logger.error(f"Failed to delete message: {e}")
 
 
-async def setup(bot):
-    """
-    Adds the ServerManager cog to the bot.
-
-    Args:
-        bot (commands.Bot): The Discord bot instance.
-    """
+async def setup(bot: commands.Bot):
+    """Adds the ServerManager cog to the bot."""
     await bot.add_cog(ServerManager(bot))
