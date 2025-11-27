@@ -22,7 +22,7 @@ API_KEY = os.getenv("LOOKUP_API_KEY")
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-LINK_PROMPT = "You have not linked your GitHub account, use `/linkgithub`."
+LINK_PROMPT = "You have not linked your GitHub account, use `/linkgithub`. \n After linking, use `/role contributor` or `/role stargazer` to get the role. It might take a minute for command to work after linking."
 
 
 class LinkGithubButton(ui.View):
