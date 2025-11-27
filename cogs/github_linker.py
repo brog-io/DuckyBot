@@ -7,6 +7,7 @@ import os
 import asyncio
 import logging
 from urllib.parse import urlencode
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,11 @@ API_KEY = os.getenv("LOOKUP_API_KEY")
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
+LINK_PROMPT = "You have not linked your GitHub account, use `/linkgithub`."
+
 
 class LinkGithubButton(ui.View):
-    def __init__(self, oauth_url: str, *, timeout=120):
+    def __init__(self, oauth_url: str, *, timeout: float = 120.0) -> None:
         super().__init__(timeout=timeout)
         self.add_item(
             discord.ui.Button(
@@ -35,16 +38,42 @@ class LinkGithubButton(ui.View):
 
 
 class GithubRolesCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    role = app_commands.Group(
+        name="role",
+        description="Get GitHub related roles",
+    )
+
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        # Shared HTTP session for all worker and GitHub calls made by this cog.
+        self.session: aiohttp.ClientSession = aiohttp.ClientSession()
+
+        missing_env = []
+        if API_KEY is None:
+            missing_env.append("LOOKUP_API_KEY")
+        if DISCORD_CLIENT_ID is None:
+            missing_env.append("DISCORD_CLIENT_ID")
+        if missing_env:
+            logger.error(
+                "Missing required environment variables: %s",
+                ", ".join(missing_env),
+            )
+        if GITHUB_TOKEN is None:
+            logger.warning(
+                "GITHUB_TOKEN is not set, GitHub API calls will be unauthenticated"
+            )
+
         if not self.weekly_verification.is_running():
             self.weekly_verification.start()
 
-    def cog_unload(self):
+    def cog_unload(self) -> None:
         self.weekly_verification.cancel()
+        if not self.session.closed:
+            # Close the aiohttp session asynchronously so unload does not block.
+            self.bot.loop.create_task(self.session.close())
 
-    def _get_github_headers(self):
-        """Get GitHub API headers with authentication if token is available"""
+    def _get_github_headers(self) -> Dict[str, str]:
+        """Build GitHub API headers using the bot token if available."""
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "brogio-discord-link",
@@ -53,36 +82,210 @@ class GithubRolesCog(commands.Cog):
             headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
         return headers
 
-    @tasks.loop(hours=168)
-    async def weekly_verification(self):
-        """Weekly task to verify all GitHub roles, remove invalid ones"""
+    async def _get_linked_github(self, discord_id: str) -> Optional[Dict[str, Any]]:
+        """Look up the linked GitHub info from your worker by Discord user id."""
+        if API_KEY is None:
+            logger.error("LOOKUP_API_KEY is not configured")
+            return None
+
         try:
-            logger.info("Starting weekly GitHub role verification")
-            for guild in self.bot.guilds:
-                await self.verify_guild_roles(guild)
-            logger.info("Weekly GitHub role verification completed")
-        except Exception as e:
-            logger.error(f"Error during weekly verification: {e}")
+            async with self.session.get(
+                f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
+                headers={"x-api-key": API_KEY},
+            ) as resp:
+                if resp.status != 200:
+                    logger.info(
+                        "Lookup for Discord id %s returned status %s",
+                        discord_id,
+                        resp.status,
+                    )
+                    return None
+                return await resp.json()
+        except Exception as exc:
+            logger.error("Error during GitHub lookup for %s: %s", discord_id, exc)
+            return None
 
-    @weekly_verification.error
-    async def weekly_verification_error(self, error):
-        logger.error(f"Weekly verification task error: {error}")
-        if not self.weekly_verification.is_running():
-            self.weekly_verification.restart()
+    async def _store_state(self, state: str, discord_id: str, ttl: int = 600) -> bool:
+        """Store a temporary OAuth state in your worker."""
+        if API_KEY is None:
+            logger.error("LOOKUP_API_KEY is not configured")
+            return False
 
-    @weekly_verification.before_loop
-    async def before_weekly_verification(self):
-        await self.bot.wait_until_ready()
+        try:
+            async with self.session.put(
+                f"{WORKER_URL}/api/stateset",
+                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                json={"state": state, "discord_id": discord_id, "ttl": ttl},
+            ) as resp:
+                if resp.status != 200:
+                    logger.error(
+                        "Failed to store state for %s, status %s, text %s",
+                        discord_id,
+                        resp.status,
+                        await resp.text(),
+                    )
+                    return False
+                return True
+        except Exception as exc:
+            logger.error("Exception while storing state for %s: %s", discord_id, exc)
+            return False
 
-    async def verify_guild_roles(self, guild):
+    async def _has_starred_repo(self, github_username: str) -> str:
+        """
+        Check if a GitHub user starred the configured repo.
+
+        Returns: "valid", "invalid", or "error".
+        """
+        max_retries = 3
+        retry_delay_seconds = 2
+        max_pages = 10
+        headers = self._get_github_headers()
+
+        for attempt in range(max_retries):
+            try:
+                page = 1
+                while page <= max_pages:
+                    url = (
+                        f"https://api.github.com/users/{github_username}/starred"
+                        f"?per_page=100&page={page}"
+                    )
+                    async with self.session.get(url, headers=headers) as resp:
+                        if resp.status == 403:
+                            logger.warning(
+                                "Rate limited when checking stars for %s "
+                                "(attempt %s of %s)",
+                                github_username,
+                                attempt + 1,
+                                max_retries,
+                            )
+                            break
+
+                        if resp.status != 200:
+                            logger.warning(
+                                "GitHub API returned %s when checking stars for %s",
+                                resp.status,
+                                github_username,
+                            )
+                            return "error"
+
+                        stars = await resp.json()
+                        target_full_name = f"{REPO_OWNER}/{REPO_NAME}".lower()
+                        if any(
+                            r.get("full_name", "").lower() == target_full_name
+                            for r in stars
+                        ):
+                            return "valid"
+
+                        if len(stars) < 100:
+                            break
+
+                        page += 1
+
+                # No star found in scanned pages
+                # If we hit a 403 above we treat it as an error and retry
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay_seconds * (attempt + 1))
+                    continue
+                return "invalid"
+
+            except Exception as exc:
+                logger.error(
+                    "Exception while checking stars for %s: %s",
+                    github_username,
+                    exc,
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay_seconds * (attempt + 1))
+                    continue
+                return "error"
+
+        return "error"
+
+    async def _is_contributor(self, github_id: int) -> str:
+        """
+        Check if a GitHub user id is a contributor to the configured repo.
+
+        Returns: "valid", "invalid", or "error".
+        """
+        headers = self._get_github_headers()
+        max_pages_contributors = 50
+        max_pages_prs = 10
+
+        try:
+            # Contributors list
+            page = 1
+            while page <= max_pages_contributors:
+                url = (
+                    f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
+                    f"/contributors?per_page=100&page={page}&anon=1"
+                )
+                async with self.session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "GitHub API returned %s for contributors check",
+                            resp.status,
+                        )
+                        break
+
+                    page_data = await resp.json()
+                    if any(
+                        c.get("id") is not None and int(c["id"]) == int(github_id)
+                        for c in page_data
+                    ):
+                        return "valid"
+
+                    if len(page_data) < 100:
+                        break
+
+                    page += 1
+
+            # Fallback to merged PRs
+            page = 1
+            while page <= max_pages_prs:
+                url = (
+                    f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
+                    f"/pulls?state=closed&per_page=100&page={page}"
+                )
+                async with self.session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "GitHub API returned %s for PR check",
+                            resp.status,
+                        )
+                        break
+
+                    prs = await resp.json()
+                    for pr in prs:
+                        user = pr.get("user")
+                        if user and user.get("id") == github_id and pr.get("merged_at"):
+                            return "valid"
+
+                    if len(prs) < 100:
+                        break
+
+                    page += 1
+
+            return "invalid"
+
+        except Exception as exc:
+            logger.error("Exception while checking contributor status: %s", exc)
+            return "error"
+
+    async def verify_guild_roles(self, guild: discord.Guild) -> None:
+        """
+        Weekly verification of Stargazer roles in a guild.
+
+        If the user no longer has a valid GitHub link or no longer stars the repo,
+        their Stargazer role is removed.
+        """
         if not GITHUB_TOKEN:
             logger.warning(
-                f"Skipping verification for {guild.name}, no GitHub token configured"
+                "Skipping verification for guild %s, no GitHub token configured",
+                guild.name,
             )
             return
 
         stargazer_role = discord.utils.get(guild.roles, name=STAR_ROLE_NAME)
-
         if not stargazer_role:
             return
 
@@ -91,137 +294,134 @@ class GithubRolesCog(commands.Cog):
 
         for member in list(stargazer_role.members):
             try:
-                data = await self.get_github_data(str(member.id))
+                data = await self._get_linked_github(str(member.id))
                 if not data:
-                    logger.warning(f"No GitHub data found for {member.display_name}")
+                    # No GitHub data, remove the role
+                    await member.remove_roles(
+                        stargazer_role,
+                        reason="Weekly check, GitHub link missing",
+                    )
+                    removed_count += 1
+                    logger.info(
+                        "Removed Stargazer role from %s, no GitHub data",
+                        member.display_name,
+                    )
+                    await asyncio.sleep(1)
                     continue
 
-                result = await self.verify_role_qualification(data, "stargazer")
+                github_username = data.get("github_username")
+                if not github_username:
+                    await member.remove_roles(
+                        stargazer_role,
+                        reason="Weekly check, missing GitHub username",
+                    )
+                    removed_count += 1
+                    logger.info(
+                        "Removed Stargazer role from %s, missing GitHub username",
+                        member.display_name,
+                    )
+                    await asyncio.sleep(1)
+                    continue
+
+                result = await self._has_starred_repo(github_username)
 
                 if result == "invalid":
                     await member.remove_roles(
                         stargazer_role,
-                        reason="Weekly check: no longer qualifies for stargazer",
+                        reason="Weekly check, no longer stars the repo",
                     )
                     removed_count += 1
-                    logger.info(f"Removed stargazer role from {member.display_name}")
+                    logger.info(
+                        "Removed Stargazer role from %s, no longer stars the repo",
+                        member.display_name,
+                    )
                     await asyncio.sleep(1)
                 elif result == "error":
                     error_count += 1
                     logger.warning(
-                        f"Could not verify {member.display_name}, keeping role"
+                        "Could not verify Stargazer status for %s, keeping role",
+                        member.display_name,
                     )
-                # result == "valid" means they keep the role
+                # "valid" keeps role
 
-            except Exception as e:
-                logger.error(f"Error verifying {member.display_name}: {e}")
+            except Exception as exc:
+                logger.error(
+                    "Error verifying Stargazer role for %s: %s",
+                    member.display_name,
+                    exc,
+                )
                 error_count += 1
                 continue
 
         logger.info(
-            f"Guild {guild.name}: verification complete. "
-            f"Removed: {removed_count}, Errors: {error_count}"
+            "Guild %s, Stargazer verification complete. Removed: %s, Errors: %s",
+            guild.name,
+            removed_count,
+            error_count,
         )
 
-    async def get_github_data(self, discord_id: str):
+    def _ensure_guild(self, interaction: Interaction) -> bool:
+        """Make sure command is used in a guild where roles exist."""
+        if interaction.guild is None:
+            # Response is always deferred before calling this helper
+            self.bot.loop.create_task(
+                interaction.followup.send(
+                    "This command can only be used inside a server.",
+                    ephemeral=True,
+                )
+            )
+            return False
+        return True
+
+    @tasks.loop(hours=168)
+    async def weekly_verification(self) -> None:
+        """Weekly task to verify all GitHub roles, removing invalid ones."""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
-                    headers={"x-api-key": API_KEY},
-                ) as resp:
-                    if resp.status == 200:
-                        return await resp.json()
-                    return None
-        except Exception:
-            return None
+            logger.info("Starting weekly GitHub role verification")
+            for guild in self.bot.guilds:
+                await self.verify_guild_roles(guild)
+            logger.info("Weekly GitHub role verification completed")
+        except Exception as exc:
+            logger.error("Error during weekly verification: %s", exc)
 
-    async def verify_role_qualification(self, github_data, role_type: str) -> str:
-        """
-        Verify if user still qualifies for a role.
-        Returns: "valid", "invalid", or "error"
-        """
-        github_username = github_data.get("github_username")
-        if not github_username:
-            return "invalid"
+    @weekly_verification.error
+    async def weekly_verification_error(self, error: Exception) -> None:
+        logger.error("Weekly verification task error: %s", error)
+        if not self.weekly_verification.is_running():
+            self.weekly_verification.restart()
 
-        if role_type == "stargazer":
-            return await self.check_stargazer_status(github_username)
-        return "invalid"
-
-    async def check_stargazer_status(self, github_username: str) -> str:
-        """
-        Check if user has starred the repo.
-        Returns: "valid", "invalid", or "error"
-        """
-        max_retries = 3
-        retry_delay = 2
-
-        for attempt in range(max_retries):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"https://api.github.com/users/{github_username}/starred?per_page=100",
-                        headers=self._get_github_headers(),
-                    ) as resp:
-                        # Rate limited or other API error - don't remove role
-                        if resp.status == 403:
-                            logger.warning(
-                                f"Rate limited checking stars for {github_username} "
-                                f"(attempt {attempt + 1}/{max_retries})"
-                            )
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(retry_delay * (attempt + 1))
-                                continue
-                            return "error"
-
-                        # Other non-200 responses
-                        if resp.status != 200:
-                            logger.warning(
-                                f"GitHub API returned {resp.status} for {github_username}"
-                            )
-                            return "error"
-
-                        stars = await resp.json()
-                        has_starred = any(
-                            r.get("full_name", "").lower()
-                            == f"{REPO_OWNER}/{REPO_NAME}".lower()
-                            for r in stars
-                        )
-
-                        return "valid" if has_starred else "invalid"
-
-            except Exception as e:
-                logger.error(f"Exception checking stars for {github_username}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
-                    continue
-                return "error"
-
-        return "error"
-
-    role = app_commands.Group(name="role", description="Get GitHub-related roles")
+    @weekly_verification.before_loop
+    async def before_weekly_verification(self) -> None:
+        await self.bot.wait_until_ready()
 
     @app_commands.command(
-        name="linkgithub", description="Link your GitHub account to your Discord."
+        name="linkgithub",
+        description="Link your GitHub account to your Discord.",
     )
-    async def linkgithub(self, interaction: Interaction):
+    async def linkgithub(self, interaction: Interaction) -> None:
+        """
+        Starts the Discord OAuth flow that your worker uses to look up GitHub.
+        This command can be used in DMs or in servers.
+        """
         await interaction.response.defer(ephemeral=True)
+
+        if DISCORD_CLIENT_ID is None:
+            await interaction.followup.send(
+                "Discord client id is not configured for linking.",
+                ephemeral=True,
+            )
+            return
+
         discord_id = str(interaction.user.id)
         state = os.urandom(16).hex()
 
-        async with aiohttp.ClientSession() as session:
-            async with session.put(
-                f"{WORKER_URL}/api/stateset",
-                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                json={"state": state, "discord_id": discord_id, "ttl": 600},
-            ) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send(
-                        f"Failed to generate a secure link. Status: {resp.status} Text: {await resp.text()}",
-                        ephemeral=True,
-                    )
-                    return
+        stored = await self._store_state(state, discord_id, ttl=600)
+        if not stored:
+            await interaction.followup.send(
+                "Failed to generate a secure link, please try again later.",
+                ephemeral=True,
+            )
+            return
 
         params = {
             "client_id": DISCORD_CLIENT_ID,
@@ -234,103 +434,66 @@ class GithubRolesCog(commands.Cog):
         view = LinkGithubButton(oauth_url)
 
         await interaction.followup.send(
-            "Click below to link your GitHub account then use `/role contributor` or `/role stargazer`",
+            "Click below to link your GitHub account then use `/role contributor` or `/role stargazer` in a server.",
             view=view,
             ephemeral=True,
         )
 
     @role.command(
-        name="contributor", description="Get the Contributor role for ente-io/ente."
+        name="contributor",
+        description="Get the Contributor role for ente-io/ente.",
     )
-    async def contributor(self, interaction: Interaction):
+    @app_commands.guild_only()
+    async def contributor(self, interaction: Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        discord_id = str(interaction.user.id)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
-                headers={"x-api-key": API_KEY},
-            ) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send(
-                        "You haven't linked your GitHub account, use `/linkgithub`",
-                        ephemeral=True,
-                    )
-                    return
-                data = await resp.json()
+        if not self._ensure_guild(interaction):
+            return
+
+        discord_id = str(interaction.user.id)
+        data = await self._get_linked_github(discord_id)
+        if not data:
+            await interaction.followup.send(LINK_PROMPT, ephemeral=True)
+            return
 
         github_id = data.get("github_id")
         if not github_id:
+            await interaction.followup.send(LINK_PROMPT, ephemeral=True)
+            return
+
+        result = await self._is_contributor(int(github_id))
+
+        if result == "error":
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`",
+                "There was an error while checking your contributor status. Please try again later.",
                 ephemeral=True,
             )
             return
 
-        gh_headers = self._get_github_headers()
-
-        contributors = []
-        page = 1
-        while True:
-            url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contributors?per_page=100&page={page}&anon=1"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=gh_headers) as resp:
-                    if resp.status != 200:
-                        break
-                    page_data = await resp.json()
-                    if not page_data:
-                        break
-                    contributors.extend(page_data)
-                    if len(page_data) < 100:
-                        break
-                    page += 1
-
-        is_contributor = any(
-            str(c.get("id")) == str(github_id) for c in contributors if c.get("id")
-        )
-
-        if not is_contributor:
-            page = 1
-            while page <= 10:
-                url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/pulls?state=closed&per_page=100&page={page}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers=gh_headers) as resp:
-                        if resp.status != 200:
-                            break
-                        prs = await resp.json()
-                        for pr in prs:
-                            user = pr.get("user")
-                            if (
-                                user
-                                and user.get("id") == github_id
-                                and pr.get("merged_at")
-                            ):
-                                is_contributor = True
-                                break
-                        if is_contributor or len(prs) < 100:
-                            break
-                page += 1
-
-        if is_contributor:
-            role = discord.utils.get(interaction.guild.roles, name=ROLE_NAME)
-            if not role:
-                await interaction.followup.send(
-                    f"The role `{ROLE_NAME}` does not exist", ephemeral=True
-                )
-                return
-            try:
-                await interaction.user.add_roles(role, reason="GitHub contributor")
-                await interaction.followup.send(
-                    f"{interaction.user.mention}, you've been given the `{ROLE_NAME}` role!",
-                    ephemeral=True,
-                )
-            except discord.Forbidden:
-                await interaction.followup.send(
-                    "I lack permission to assign roles", ephemeral=True
-                )
-        else:
+        if result == "invalid":
             await interaction.followup.send(
-                f"{interaction.user.mention}, you're not a contributor to `{REPO_OWNER}/{REPO_NAME}`",
+                f"{interaction.user.mention}, you are not a contributor to `{REPO_OWNER}/{REPO_NAME}`.",
+                ephemeral=True,
+            )
+            return
+
+        role = discord.utils.get(interaction.guild.roles, name=ROLE_NAME)
+        if not role:
+            await interaction.followup.send(
+                f"The role `{ROLE_NAME}` does not exist on this server.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await interaction.user.add_roles(role, reason="GitHub contributor")
+            await interaction.followup.send(
+                f"{interaction.user.mention}, you have been given the `{ROLE_NAME}` role.",
+                ephemeral=True,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "I do not have permission to assign roles.",
                 ephemeral=True,
             )
 
@@ -338,76 +501,60 @@ class GithubRolesCog(commands.Cog):
         name="stargazer",
         description="Get the Stargazer role if you starred ente-io/ente.",
     )
-    async def starred(self, interaction: Interaction):
+    @app_commands.guild_only()
+    async def starred(self, interaction: Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        discord_id = str(interaction.user.id)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{WORKER_URL}/api/lookup?discord_id={discord_id}",
-                headers={"x-api-key": API_KEY},
-            ) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send(
-                        "You haven't linked your GitHub account, use `/linkgithub`",
-                        ephemeral=True,
-                    )
-                    return
-                data = await resp.json()
+        if not self._ensure_guild(interaction):
+            return
+
+        discord_id = str(interaction.user.id)
+        data = await self._get_linked_github(discord_id)
+        if not data:
+            await interaction.followup.send(LINK_PROMPT, ephemeral=True)
+            return
 
         github_username = data.get("github_username")
         if not github_username:
+            await interaction.followup.send(LINK_PROMPT, ephemeral=True)
+            return
+
+        result = await self._has_starred_repo(github_username)
+
+        if result == "error":
             await interaction.followup.send(
-                "You haven't linked your GitHub account, use `/linkgithub`",
+                "There was an error while checking your stars. Please try again later.",
                 ephemeral=True,
             )
             return
 
-        starred = False
-        page = 1
-        gh_headers = self._get_github_headers()
-
-        while page <= 10:
-            url = f"https://api.github.com/users/{github_username}/starred?per_page=100&page={page}"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=gh_headers) as resp:
-                    if resp.status != 200:
-                        break
-                    stars = await resp.json()
-                    if any(
-                        r.get("full_name", "").lower()
-                        == f"{REPO_OWNER}/{REPO_NAME}".lower()
-                        for r in stars
-                    ):
-                        starred = True
-                        break
-                    if len(stars) < 100:
-                        break
-            page += 1
-
-        if starred:
-            role = discord.utils.get(interaction.guild.roles, name=STAR_ROLE_NAME)
-            if not role:
-                await interaction.followup.send(
-                    f"The role `{STAR_ROLE_NAME}` does not exist", ephemeral=True
-                )
-                return
-            try:
-                await interaction.user.add_roles(role, reason="GitHub stargazer")
-                await interaction.followup.send(
-                    f"{interaction.user.mention}, you've been given the `{STAR_ROLE_NAME}` role!",
-                    ephemeral=True,
-                )
-            except discord.Forbidden:
-                await interaction.followup.send(
-                    "I lack permission to assign roles", ephemeral=True
-                )
-        else:
+        if result == "invalid":
             await interaction.followup.send(
-                f"{interaction.user.mention}, you haven't starred `{REPO_OWNER}/{REPO_NAME}`",
+                f"{interaction.user.mention}, you have not starred `{REPO_OWNER}/{REPO_NAME}`.",
+                ephemeral=True,
+            )
+            return
+
+        role = discord.utils.get(interaction.guild.roles, name=STAR_ROLE_NAME)
+        if not role:
+            await interaction.followup.send(
+                f"The role `{STAR_ROLE_NAME}` does not exist on this server.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await interaction.user.add_roles(role, reason="GitHub stargazer")
+            await interaction.followup.send(
+                f"{interaction.user.mention}, you have been given the `{STAR_ROLE_NAME}` role.",
+                ephemeral=True,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "I do not have permission to assign roles.",
                 ephemeral=True,
             )
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(GithubRolesCog(bot))
