@@ -327,11 +327,15 @@ class ServerManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Processes new messages for auto-publishing, message link previews, and auto-threading for images."""
+        """
+        Processes new messages for auto-publishing, message link previews, and auto-threading for images.
+
+        Args:
+            message (discord.Message): The received message object.
+        """
         if message.author.bot:
             return
 
-        # Auto-publish in announcement channels
         if (
             isinstance(message.channel, discord.TextChannel)
             and message.channel.is_news()
@@ -347,25 +351,27 @@ class ServerManager(commands.Cog):
                 )
             except discord.HTTPException as e:
                 logger.error(
-                    f"Failed to publish message in {message.channel.name} (ID: {message.channel.id}): {e}"
+                    f"Failed to publish message in {message.channel.name} (ID: {message.channel.id}): {str(e)}"
                 )
 
-        # Components V2 message-link preview for discord.com/channels/... links
         for match in self.message_link_pattern.finditer(message.content):
-            _, channel_id, message_id = match.groups()
+            guild_id, channel_id, message_id = match.groups()
             try:
                 channel = self.bot.get_channel(int(channel_id))
-                if channel is None:
-                    channel = await self.bot.fetch_channel(int(channel_id))
-
-                if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                if not channel:
                     continue
-
                 referenced_message = await channel.fetch_message(int(message_id))
-                if referenced_message is None:
+                if not referenced_message:
                     continue
-
-                image_url = None
+                embed = discord.Embed(
+                    description=referenced_message.content or "*[No content]*",
+                    timestamp=referenced_message.created_at,
+                    color=0xFFCD3F,
+                )
+                embed.set_author(
+                    name=referenced_message.author.display_name,
+                    icon_url=referenced_message.author.display_avatar.url,
+                )
                 img = next(
                     (
                         a
@@ -375,53 +381,24 @@ class ServerManager(commands.Cog):
                     None,
                 )
                 if img:
-                    image_url = img.url
-
-                comps = self._message_link_preview_components_v2(
-                    author_name=referenced_message.author.display_name,
-                    author_avatar_url=referenced_message.author.display_avatar.url,
-                    message_content=referenced_message.content or "",
-                    created_at_iso=referenced_message.created_at.isoformat(),
-                    jump_url=match.group(0),
-                    image_url=image_url,
-                )
-
-                await self._send_components_v2_message(
-                    message.channel.id,
-                    components=comps,
-                    allowed_mentions={"parse": []},
-                    message_reference={
-                        "message_id": message.id,
-                        "channel_id": message.channel.id,
-                        "guild_id": message.guild.id if message.guild else None,
-                        "fail_if_not_exists": False,
-                    },
-                )
-
-            except discord.Forbidden:
-                logger.warning("Missing permissions to fetch message or post preview.")
-            except discord.NotFound:
-                logger.warning("Referenced message/channel not found.")
-            except discord.HTTPException as e:
-                logger.error(f"HTTP error while sending v2 preview: {e}")
+                    embed.set_image(url=img.url)
+                view = View()
+                view.add_item(MessageLinkButton(match.group(0)))
+                await message.reply(embed=embed, view=view, mention_author=False)
             except Exception as e:
                 logger.error(f"Error processing message link: {e}")
 
-        # Auto-thread images in the target channel, delete non-image posts
-        if message.channel.id == self.target_channel_id:
-            has_image = any(is_image_attachment(a) for a in message.attachments)
-
+        if message.channel.id == self.target_channel_id and not message.author.bot:
+            has_image = any(
+                is_image_attachment(attachment) for attachment in message.attachments
+            )
             if has_image:
                 for reaction in self.reactions:
-                    try:
-                        await message.add_reaction(reaction)
-                    except discord.HTTPException:
-                        pass
-
+                    await message.add_reaction(reaction)
                 try:
                     thread = await message.create_thread(
                         name=(
-                            f"Discussion: {_safe_text(message.content, 30)}..."
+                            f"Discussion: {message.content[:30]}..."
                             if message.content
                             else "Discussion"
                         )
@@ -433,7 +410,6 @@ class ServerManager(commands.Cog):
                     logger.error("Bot lacks permissions to create threads.")
                 except discord.HTTPException as e:
                     logger.error(f"Failed to create thread: {e}")
-
             else:
                 try:
                     await message.delete()
