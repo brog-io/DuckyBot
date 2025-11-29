@@ -41,6 +41,17 @@ def _safe_text(s: Optional[str], max_len: int = 1800) -> str:
     return s[: max_len - 3] + "..."
 
 
+class MessageLinkButton(Button):
+    """A simple link button that takes the user to the referenced Discord message."""
+
+    def __init__(self, message_url: str):
+        super().__init__(
+            style=discord.ButtonStyle.link,
+            label="Open Message",
+            url=message_url,
+        )
+
+
 class ServerManager(commands.Cog):
     """
     Manages server onboarding, components-v2 welcome message, message link previews,
@@ -360,9 +371,11 @@ class ServerManager(commands.Cog):
                 channel = self.bot.get_channel(int(channel_id))
                 if not channel:
                     continue
+
                 referenced_message = await channel.fetch_message(int(message_id))
                 if not referenced_message:
                     continue
+
                 embed = discord.Embed(
                     description=referenced_message.content or "*[No content]*",
                     timestamp=referenced_message.created_at,
@@ -372,6 +385,7 @@ class ServerManager(commands.Cog):
                     name=referenced_message.author.display_name,
                     icon_url=referenced_message.author.display_avatar.url,
                 )
+
                 img = next(
                     (
                         a
@@ -382,8 +396,10 @@ class ServerManager(commands.Cog):
                 )
                 if img:
                     embed.set_image(url=img.url)
+
                 view = View()
                 view.add_item(MessageLinkButton(match.group(0)))
+
                 await message.reply(embed=embed, view=view, mention_author=False)
             except Exception as e:
                 logger.error(f"Error processing message link: {e}")
