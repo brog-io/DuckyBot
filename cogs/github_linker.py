@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands, Interaction, ui
-from discord.ext import commands, tasks
+from discord.ext import commands
 from dotenv import load_dotenv
 import aiohttp
 import os
@@ -22,12 +22,17 @@ API_KEY = os.getenv("LOOKUP_API_KEY")
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-LINK_PROMPT = "You have not linked your GitHub account, use `/linkgithub`. \n-# After linking, use `/role contributor` or `/role stargazer` to get the role. It might take a minute for command to work after linking."
+LINK_PROMPT = (
+    "You have not linked your GitHub account, use `/linkgithub`. \n"
+    "-# After linking, use `/role contributor` or `/role stargazer` to get the role. "
+    "It might take a minute for command to work after linking."
+)
 
 
 class LinkGithubButton(ui.View):
     def __init__(self, oauth_url: str, *, timeout: float = 120.0) -> None:
         super().__init__(timeout=timeout)
+        # Button that opens the Discord OAuth2 authorization URL in the browser
         self.add_item(
             discord.ui.Button(
                 label="Link GitHub via Discord",
@@ -38,6 +43,7 @@ class LinkGithubButton(ui.View):
 
 
 class GithubRolesCog(commands.Cog):
+    # Slash command group for /role subcommands
     role = app_commands.Group(
         name="role",
         description="Get GitHub related roles",
@@ -45,7 +51,7 @@ class GithubRolesCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        # Shared HTTP session for all worker and GitHub calls made by this cog.
+        # Shared HTTP session for all worker and GitHub calls made by this cog
         self.session: aiohttp.ClientSession = aiohttp.ClientSession()
 
         missing_env = []
@@ -63,17 +69,19 @@ class GithubRolesCog(commands.Cog):
                 "GITHUB_TOKEN is not set, GitHub API calls will be unauthenticated"
             )
 
-        if not self.weekly_verification.is_running():
-            self.weekly_verification.start()
-
     def cog_unload(self) -> None:
-        self.weekly_verification.cancel()
+        """
+        Called when the cog is unloaded.
+        Clean up the aiohttp session without blocking the unload.
+        """
         if not self.session.closed:
-            # Close the aiohttp session asynchronously so unload does not block.
             self.bot.loop.create_task(self.session.close())
 
     def _get_github_headers(self) -> Dict[str, str]:
-        """Build GitHub API headers using the bot token if available."""
+        """
+        Build GitHub API headers.
+        Uses token authentication if GITHUB_TOKEN is configured.
+        """
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "brogio-discord-link",
@@ -83,7 +91,11 @@ class GithubRolesCog(commands.Cog):
         return headers
 
     async def _get_linked_github(self, discord_id: str) -> Optional[Dict[str, Any]]:
-        """Look up the linked GitHub info from your worker by Discord user id."""
+        """
+        Look up the linked GitHub info from your worker by Discord user id.
+
+        Returns the JSON payload from the worker or None if not found or on error.
+        """
         if API_KEY is None:
             logger.error("LOOKUP_API_KEY is not configured")
             return None
@@ -106,7 +118,11 @@ class GithubRolesCog(commands.Cog):
             return None
 
     async def _store_state(self, state: str, discord_id: str, ttl: int = 600) -> bool:
-        """Store a temporary OAuth state in your worker."""
+        """
+        Store a temporary OAuth state in your worker.
+
+        The worker can use this to map the Discord user id to the OAuth response.
+        """
         if API_KEY is None:
             logger.error("LOOKUP_API_KEY is not configured")
             return False
@@ -181,8 +197,7 @@ class GithubRolesCog(commands.Cog):
 
                         page += 1
 
-                # No star found in scanned pages
-                # If we hit a 403 above we treat it as an error and retry
+                # No star found in scanned pages, no retryable error occurred
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay_seconds * (attempt + 1))
                     continue
@@ -212,7 +227,7 @@ class GithubRolesCog(commands.Cog):
         max_pages_prs = 10
 
         try:
-            # Contributors list
+            # Check contributors list first, this is cheaper and simple
             page = 1
             while page <= max_pages_contributors:
                 url = (
@@ -239,7 +254,7 @@ class GithubRolesCog(commands.Cog):
 
                     page += 1
 
-            # Fallback to merged PRs
+            # Fallback to merged PRs if not present in contributors list
             page = 1
             while page <= max_pages_prs:
                 url = (
@@ -271,99 +286,13 @@ class GithubRolesCog(commands.Cog):
             logger.error("Exception while checking contributor status: %s", exc)
             return "error"
 
-    async def verify_guild_roles(self, guild: discord.Guild) -> None:
-        """
-        Weekly verification of Stargazer roles in a guild.
-
-        If the user no longer has a valid GitHub link or no longer stars the repo,
-        their Stargazer role is removed.
-        """
-        if not GITHUB_TOKEN:
-            logger.warning(
-                "Skipping verification for guild %s, no GitHub token configured",
-                guild.name,
-            )
-            return
-
-        stargazer_role = discord.utils.get(guild.roles, name=STAR_ROLE_NAME)
-        if not stargazer_role:
-            return
-
-        removed_count = 0
-        error_count = 0
-
-        for member in list(stargazer_role.members):
-            try:
-                data = await self._get_linked_github(str(member.id))
-                if not data:
-                    # No GitHub data, remove the role
-                    await member.remove_roles(
-                        stargazer_role,
-                        reason="Weekly check, GitHub link missing",
-                    )
-                    removed_count += 1
-                    logger.info(
-                        "Removed Stargazer role from %s, no GitHub data",
-                        member.display_name,
-                    )
-                    await asyncio.sleep(1)
-                    continue
-
-                github_username = data.get("github_username")
-                if not github_username:
-                    await member.remove_roles(
-                        stargazer_role,
-                        reason="Weekly check, missing GitHub username",
-                    )
-                    removed_count += 1
-                    logger.info(
-                        "Removed Stargazer role from %s, missing GitHub username",
-                        member.display_name,
-                    )
-                    await asyncio.sleep(1)
-                    continue
-
-                result = await self._has_starred_repo(github_username)
-
-                if result == "invalid":
-                    await member.remove_roles(
-                        stargazer_role,
-                        reason="Weekly check, no longer stars the repo",
-                    )
-                    removed_count += 1
-                    logger.info(
-                        "Removed Stargazer role from %s, no longer stars the repo",
-                        member.display_name,
-                    )
-                    await asyncio.sleep(1)
-                elif result == "error":
-                    error_count += 1
-                    logger.warning(
-                        "Could not verify Stargazer status for %s, keeping role",
-                        member.display_name,
-                    )
-                # "valid" keeps role
-
-            except Exception as exc:
-                logger.error(
-                    "Error verifying Stargazer role for %s: %s",
-                    member.display_name,
-                    exc,
-                )
-                error_count += 1
-                continue
-
-        logger.info(
-            "Guild %s, Stargazer verification complete. Removed: %s, Errors: %s",
-            guild.name,
-            removed_count,
-            error_count,
-        )
-
     def _ensure_guild(self, interaction: Interaction) -> bool:
-        """Make sure command is used in a guild where roles exist."""
+        """
+        Make sure the command is used in a guild where roles exist.
+
+        This helper assumes the interaction response was already deferred.
+        """
         if interaction.guild is None:
-            # Response is always deferred before calling this helper
             self.bot.loop.create_task(
                 interaction.followup.send(
                     "This command can only be used inside a server.",
@@ -373,27 +302,6 @@ class GithubRolesCog(commands.Cog):
             return False
         return True
 
-    @tasks.loop(hours=168)
-    async def weekly_verification(self) -> None:
-        """Weekly task to verify all GitHub roles, removing invalid ones."""
-        try:
-            logger.info("Starting weekly GitHub role verification")
-            for guild in self.bot.guilds:
-                await self.verify_guild_roles(guild)
-            logger.info("Weekly GitHub role verification completed")
-        except Exception as exc:
-            logger.error("Error during weekly verification: %s", exc)
-
-    @weekly_verification.error
-    async def weekly_verification_error(self, error: Exception) -> None:
-        logger.error("Weekly verification task error: %s", error)
-        if not self.weekly_verification.is_running():
-            self.weekly_verification.restart()
-
-    @weekly_verification.before_loop
-    async def before_weekly_verification(self) -> None:
-        await self.bot.wait_until_ready()
-
     @app_commands.command(
         name="linkgithub",
         description="Link your GitHub account to your Discord.",
@@ -401,6 +309,7 @@ class GithubRolesCog(commands.Cog):
     async def linkgithub(self, interaction: Interaction) -> None:
         """
         Starts the Discord OAuth flow that your worker uses to look up GitHub.
+
         This command can be used in DMs or in servers.
         """
         await interaction.response.defer(ephemeral=True)
@@ -434,7 +343,8 @@ class GithubRolesCog(commands.Cog):
         view = LinkGithubButton(oauth_url)
 
         await interaction.followup.send(
-            "Click below to link your GitHub account then use `/role contributor` or `/role stargazer` in a server.",
+            "Click below to link your GitHub account then use `/role contributor` or "
+            "`/role stargazer` in a server.",
             view=view,
             ephemeral=True,
         )
@@ -445,6 +355,9 @@ class GithubRolesCog(commands.Cog):
     )
     @app_commands.guild_only()
     async def contributor(self, interaction: Interaction) -> None:
+        """
+        Give the Contributor role if the user contributed to the configured repo.
+        """
         await interaction.response.defer(ephemeral=True)
 
         if not self._ensure_guild(interaction):
@@ -465,14 +378,16 @@ class GithubRolesCog(commands.Cog):
 
         if result == "error":
             await interaction.followup.send(
-                "There was an error while checking your contributor status. Please try again later.",
+                "There was an error while checking your contributor status. "
+                "Please try again later.",
                 ephemeral=True,
             )
             return
 
         if result == "invalid":
             await interaction.followup.send(
-                f"{interaction.user.mention}, you are not a contributor to `{REPO_OWNER}/{REPO_NAME}`.",
+                f"{interaction.user.mention}, you are not a contributor to "
+                f"`{REPO_OWNER}/{REPO_NAME}`.",
                 ephemeral=True,
             )
             return
@@ -503,6 +418,9 @@ class GithubRolesCog(commands.Cog):
     )
     @app_commands.guild_only()
     async def starred(self, interaction: Interaction) -> None:
+        """
+        Give the Stargazer role if the user starred the configured repo.
+        """
         await interaction.response.defer(ephemeral=True)
 
         if not self._ensure_guild(interaction):
@@ -530,7 +448,8 @@ class GithubRolesCog(commands.Cog):
 
         if result == "invalid":
             await interaction.followup.send(
-                f"{interaction.user.mention}, you have not starred `{REPO_OWNER}/{REPO_NAME}`.",
+                f"{interaction.user.mention}, you have not starred "
+                f"`{REPO_OWNER}/{REPO_NAME}`.",
                 ephemeral=True,
             )
             return
@@ -546,7 +465,8 @@ class GithubRolesCog(commands.Cog):
         try:
             await interaction.user.add_roles(role, reason="GitHub stargazer")
             await interaction.followup.send(
-                f"{interaction.user.mention}, you have been given the `{STAR_ROLE_NAME}` role.",
+                f"{interaction.user.mention}, you have been given the "
+                f"`{STAR_ROLE_NAME}` role.",
                 ephemeral=True,
             )
         except discord.Forbidden:
@@ -557,4 +477,7 @@ class GithubRolesCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """
+    Standard cog setup entry point for discord.py 2.x.
+    """
     await bot.add_cog(GithubRolesCog(bot))
