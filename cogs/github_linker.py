@@ -336,7 +336,7 @@ class GithubRolesCog(commands.Cog):
             "client_id": DISCORD_CLIENT_ID,
             "redirect_uri": f"{WORKER_URL}/auth/discord/callback",
             "response_type": "code",
-            "scope": "connections",
+            "scope": "connections role_connections.write",
             "state": state,
         }
         oauth_url = f"https://discord.com/oauth2/authorize?{urlencode(params)}"
