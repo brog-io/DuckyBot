@@ -98,6 +98,7 @@ class DocSearch(commands.Cog):
                     "If the authenticator codes on your PC and phone are different, "
                     "make sure the time is correct on both devices. The codes are time based, "
                     "so even a small time drift can cause invalid codes."
+                    "You can use <https://time.is/> to see if your device's time is accurate."
                 ),
             }
         }
