@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# Load env vars
 load_dotenv()
 API_KEY = os.getenv("POGGERS_API_KEY")
 AO_API_KEY = os.getenv("ANSWEROVERFLOW_API_KEY")
@@ -19,7 +18,6 @@ AO_API_KEY = os.getenv("ANSWEROVERFLOW_API_KEY")
 TARGET_GUILD_ID = 948937918347608085
 
 SELFHELP_CHANNEL_IDS = [1364139133794123807, 1383504546361380995]
-SOLVED_ONLY_CHANNEL_IDS = [1121126215995113552]
 
 SOLVED_TAG_IDS = {
     1364139133794123807: 1364276749826920538,
@@ -42,6 +40,9 @@ class SelfHelp(commands.Cog):
         return guild_id == TARGET_GUILD_ID
 
     async def post_setup(self):
+        """
+        Fetch slash command IDs so we can reference them in messages.
+        """
         try:
             cmds = await self.bot.tree.fetch_commands()
             for cmd in cmds:
@@ -55,7 +56,7 @@ class SelfHelp(commands.Cog):
             logger.error(f"Failed to fetch commands: {e}")
 
     ########################################################################
-    # AnswerOverflow
+    # AnswerOverflow syncing
     ########################################################################
 
     def parse_message_link(self, link: str):
@@ -64,7 +65,9 @@ class SelfHelp(commands.Cog):
             raise ValueError("Invalid Discord message link")
         return int(parts[1]), int(parts[2]), int(parts[3])
 
-    async def update_answer_overflow_solution(self, thread_message_id: str, solution_message_id: str | None):
+    async def update_answer_overflow_solution(
+        self, thread_message_id: str, solution_message_id: str | None
+    ):
         if not AO_API_KEY:
             logger.warning("No AnswerOverflow API key configured")
             return
@@ -76,7 +79,7 @@ class SelfHelp(commands.Cog):
             async with session.post(
                 url,
                 json=payload,
-                headers={"Content-Type": "application/json", "x-api-key": AO_API_KEY}
+                headers={"Content-Type": "application/json", "x-api-key": AO_API_KEY},
             ) as resp:
                 text = await resp.text()
                 if resp.status >= 300:
@@ -85,17 +88,22 @@ class SelfHelp(commands.Cog):
                     logger.info("AO update ok")
 
     ########################################################################
-    # AI DOC SEARCH  << THIS IS THE PART THAT POSTS ANSWERS
+    # AI doc search and reply generator
     ########################################################################
 
-    async def query_api(self, title: str, body: str = "", tags: list[str] = None) -> str:
+    async def query_api(
+        self, title: str, body: str = "", tags: list[str] = None
+    ) -> str:
+        """
+        Send the thread content to your external AI API.
+        """
         tags_text = ", ".join(tags) if tags else "None"
         prompt = f"Title: {title}\nTags: {tags_text}\nMessage: {body.strip() or 'No content provided.'}"
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://api.poggers.win/api/ente/docs-search",
-                json={"query": prompt, "key": API_KEY}
+                json={"query": prompt, "key": API_KEY},
             ) as resp:
                 if resp.status != 200:
                     return f"API error: {resp.status}"
@@ -104,7 +112,12 @@ class SelfHelp(commands.Cog):
                     return data.get("answer", "No answer returned.")
                 return "Sorry, I could not find an answer."
 
-    async def process_forum_thread(self, thread: discord.Thread, initial_message: discord.Message = None):
+    async def process_forum_thread(
+        self, thread: discord.Thread, initial_message: discord.Message = None
+    ):
+        """
+        Called when a new forum post is created.
+        """
         if not self._is_target_guild(thread.guild.id):
             return
 
@@ -132,8 +145,16 @@ class SelfHelp(commands.Cog):
 
         answer = await self.query_api(thread.name or body, body, tag_names)
 
-        solved_hint = f"</solved:{self.solved_command_id}>" if self.solved_command_id else "`/solved`"
-        docsearch_hint = f"</docsearch:{self.docsearch_command_id}>" if self.docsearch_command_id else "`/docsearch`"
+        solved_hint = (
+            f"</solved:{self.solved_command_id}>"
+            if self.solved_command_id
+            else "`/solved`"
+        )
+        docsearch_hint = (
+            f"</docsearch:{self.docsearch_command_id}>"
+            if self.docsearch_command_id
+            else "`/docsearch`"
+        )
 
         response = (
             f"{answer}\n"
@@ -144,10 +165,13 @@ class SelfHelp(commands.Cog):
         await analyzing.edit(content=response)
 
     ########################################################################
-    # Auto close
+    # Auto close thread scheduling
     ########################################################################
 
     async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
+        """
+        Auto closes solved threads after the delay.
+        """
         try:
             await asyncio.sleep(delay)
             await thread.send("This thread is now closed.")
@@ -164,49 +188,76 @@ class SelfHelp(commands.Cog):
     @app_commands.command(name="solved", description="Mark a thread as solved")
     @app_commands.describe(message_link="Link to the message that solved your problem")
     async def solved(self, interaction: discord.Interaction, message_link: str):
+        """
+        Marks a thread solved, applies the solved tag, and syncs to AnswerOverflow.
+        """
         thread = interaction.channel
 
         if not isinstance(thread, discord.Thread):
-            await interaction.response.send_message("Use this inside a thread.", ephemeral=True)
+            await interaction.response.send_message(
+                "Use this inside a thread.", ephemeral=True
+            )
             return
 
-        if thread.owner_id != interaction.user.id and not interaction.user.guild_permissions.manage_threads:
-            await interaction.response.send_message("You cannot mark this thread as solved.", ephemeral=True)
+        if (
+            thread.owner_id != interaction.user.id
+            and not interaction.user.guild_permissions.manage_threads
+        ):
+            await interaction.response.send_message(
+                "You cannot mark this thread as solved.", ephemeral=True
+            )
             return
 
         guild_id, _, solution_message_id = self.parse_message_link(message_link)
 
         if guild_id != thread.guild.id:
-            await interaction.response.send_message("Message must be from this server.", ephemeral=True)
+            await interaction.response.send_message(
+                "Message must be from this server.", ephemeral=True
+            )
             return
 
         close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
-        await interaction.response.send_message(f"Solved. Auto closing <t:{close_time}:R>.")
+        await interaction.response.send_message(
+            f"Solved. Auto closing <t:{close_time}:R>."
+        )
 
         task = asyncio.create_task(self.delayed_close_thread(thread))
         self.pending_closures[thread.id] = {"task": task}
 
-        # Apply solved tag
         if isinstance(thread.parent, discord.ForumChannel):
             solved_tag_id = SOLVED_TAG_IDS.get(thread.parent.id)
             if solved_tag_id:
-                tag = next((t for t in thread.parent.available_tags if t.id == solved_tag_id), None)
+                tag = next(
+                    (t for t in thread.parent.available_tags if t.id == solved_tag_id),
+                    None,
+                )
                 if tag and tag not in thread.applied_tags:
                     await thread.edit(applied_tags=[*thread.applied_tags, tag])
 
-        # AO sync
-        await self.update_answer_overflow_solution(str(thread.id), str(solution_message_id))
+        await self.update_answer_overflow_solution(
+            str(thread.id), str(solution_message_id)
+        )
 
     @app_commands.command(name="unsolve", description="Remove solved status")
     async def unsolve(self, interaction: discord.Interaction):
+        """
+        Removes the solved tag and cancels auto close.
+        """
         thread = interaction.channel
 
         if not isinstance(thread, discord.Thread):
-            await interaction.response.send_message("Use this inside a thread.", ephemeral=True)
+            await interaction.response.send_message(
+                "Use this inside a thread.", ephemeral=True
+            )
             return
 
-        if thread.owner_id != interaction.user.id and not interaction.user.guild_permissions.manage_threads:
-            await interaction.response.send_message("You cannot unsolve this thread.", ephemeral=True)
+        if (
+            thread.owner_id != interaction.user.id
+            and not interaction.user.guild_permissions.manage_threads
+        ):
+            await interaction.response.send_message(
+                "You cannot unsolve this thread.", ephemeral=True
+            )
             return
 
         if thread.id in self.pending_closures:
@@ -217,22 +268,27 @@ class SelfHelp(commands.Cog):
 
         if isinstance(thread.parent, discord.ForumChannel):
             solved_tag_id = SOLVED_TAG_IDS.get(thread.parent.id)
-            await thread.edit(applied_tags=[t for t in thread.applied_tags if t.id != solved_tag_id])
+            await thread.edit(
+                applied_tags=[t for t in thread.applied_tags if t.id != solved_tag_id]
+            )
 
         await self.update_answer_overflow_solution(str(thread.id), None)
 
         await interaction.response.send_message("Thread unsolved.")
 
     ########################################################################
-    # Events that TRIGGER AI ANSWERS
+    # Events that trigger AI answers
     ########################################################################
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
+        """
+        Trigger AI processing when a new thread is created in a self help forum.
+        """
         if not self._is_target_guild(thread.guild.id):
             return
 
-        if thread.parent_id not in SELFHELP_CHANNEL_IDS + SOLVED_ONLY_CHANNEL_IDS:
+        if thread.parent_id not in SELFHELP_CHANNEL_IDS:
             return
 
         await asyncio.sleep(1)
@@ -240,12 +296,15 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        """
+        Handles first post in a thread case where the post itself creates the thread.
+        """
         if message.author.bot:
             return
 
         if (
             isinstance(message.channel, discord.Thread)
-            and message.channel.parent_id in SELFHELP_CHANNEL_IDS + SOLVED_ONLY_CHANNEL_IDS
+            and message.channel.parent_id in SELFHELP_CHANNEL_IDS
             and message.id == message.channel.id
         ):
             await self.process_forum_thread(message.channel, initial_message=message)
