@@ -84,7 +84,11 @@ class SelfHelp(commands.Cog):
             async with session.post(
                 url,
                 json=payload,
-                headers={"Content-Type": "application/json", "x-api-key": AO_API_KEY},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": AO_API_KEY,
+                    "User-Agent": "Mozilla/5.0",
+                },
             ) as resp:
                 text = await resp.text()
                 if resp.status >= 300:
