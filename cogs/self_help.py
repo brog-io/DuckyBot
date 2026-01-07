@@ -40,9 +40,7 @@ class SelfHelp(commands.Cog):
         return guild_id == TARGET_GUILD_ID
 
     async def post_setup(self):
-        """
-        Fetch slash command IDs so we can reference them in messages.
-        """
+        # Fetch slash command IDs so we can reference them in messages.
         try:
             cmds = await self.bot.tree.fetch_commands()
             for cmd in cmds:
@@ -66,13 +64,20 @@ class SelfHelp(commands.Cog):
         return int(parts[1]), int(parts[2]), int(parts[3])
 
     async def update_answer_overflow_solution(
-        self, thread_message_id: str, solution_message_id: str | None
+        self, thread_first_message_id: str, solution_message_id: str
     ):
+        """
+        thread_first_message_id must be the message id of the first post in the thread
+        solution_message_id should be a message id string
+        or '' to clear the solution
+        """
         if not AO_API_KEY:
             logger.warning("No AnswerOverflow API key configured")
             return
 
-        url = f"https://www.answeroverflow.com/api/v1/messages/{thread_message_id}"
+        url = (
+            f"https://www.answeroverflow.com/api/v1/messages/{thread_first_message_id}"
+        )
         payload = {"solutionId": solution_message_id}
 
         async with aiohttp.ClientSession() as session:
@@ -94,9 +99,6 @@ class SelfHelp(commands.Cog):
     async def query_api(
         self, title: str, body: str = "", tags: list[str] = None
     ) -> str:
-        """
-        Send the thread content to your external AI API.
-        """
         tags_text = ", ".join(tags) if tags else "None"
         prompt = f"Title: {title}\nTags: {tags_text}\nMessage: {body.strip() or 'No content provided.'}"
 
@@ -115,9 +117,6 @@ class SelfHelp(commands.Cog):
     async def process_forum_thread(
         self, thread: discord.Thread, initial_message: discord.Message = None
     ):
-        """
-        Called when a new forum post is created.
-        """
         if not self._is_target_guild(thread.guild.id):
             return
 
@@ -169,9 +168,6 @@ class SelfHelp(commands.Cog):
     ########################################################################
 
     async def delayed_close_thread(self, thread: discord.Thread, delay: int = 1800):
-        """
-        Auto closes solved threads after the delay.
-        """
         try:
             await asyncio.sleep(delay)
             await thread.send("This thread is now closed.")
@@ -188,9 +184,6 @@ class SelfHelp(commands.Cog):
     @app_commands.command(name="solved", description="Mark a thread as solved")
     @app_commands.describe(message_link="Link to the message that solved your problem")
     async def solved(self, interaction: discord.Interaction, message_link: str):
-        """
-        Marks a thread solved, applies the solved tag, and syncs to AnswerOverflow.
-        """
         thread = interaction.channel
 
         if not isinstance(thread, discord.Thread):
@@ -216,6 +209,11 @@ class SelfHelp(commands.Cog):
             )
             return
 
+        # Get the first message in the thread, this is the AO message id
+        async for msg in thread.history(limit=1, oldest_first=True):
+            first_message_id = msg.id
+            break
+
         close_time = int(datetime.now(timezone.utc).timestamp()) + 1800
         await interaction.response.send_message(
             f"Solved. Auto closing <t:{close_time}:R>."
@@ -234,15 +232,14 @@ class SelfHelp(commands.Cog):
                 if tag and tag not in thread.applied_tags:
                     await thread.edit(applied_tags=[*thread.applied_tags, tag])
 
+        # Always send string solution id
         await self.update_answer_overflow_solution(
-            str(thread.id), str(solution_message_id)
+            str(first_message_id),
+            str(solution_message_id),
         )
 
     @app_commands.command(name="unsolve", description="Remove solved status")
     async def unsolve(self, interaction: discord.Interaction):
-        """
-        Removes the solved tag and cancels auto close.
-        """
         thread = interaction.channel
 
         if not isinstance(thread, discord.Thread):
@@ -272,7 +269,16 @@ class SelfHelp(commands.Cog):
                 applied_tags=[t for t in thread.applied_tags if t.id != solved_tag_id]
             )
 
-        await self.update_answer_overflow_solution(str(thread.id), None)
+        # Get the first message id again
+        async for msg in thread.history(limit=1, oldest_first=True):
+            first_message_id = msg.id
+            break
+
+        # AO requires empty string to clear solution
+        await self.update_answer_overflow_solution(
+            str(first_message_id),
+            "",
+        )
 
         await interaction.response.send_message("Thread unsolved.")
 
@@ -282,9 +288,6 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
-        """
-        Trigger AI processing when a new thread is created in a self help forum.
-        """
         if not self._is_target_guild(thread.guild.id):
             return
 
@@ -296,9 +299,6 @@ class SelfHelp(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """
-        Handles first post in a thread case where the post itself creates the thread.
-        """
         if message.author.bot:
             return
 
