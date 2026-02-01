@@ -46,9 +46,7 @@ def _safe_text(s: Optional[str], max_len: int = 1800) -> str:
     if not s:
         return ""
     s = s.strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 3] + "..."
+    return s if len(s) <= max_len else s[: max_len - 3] + "..."
 
 
 class MessageLinkButton(Button):
@@ -176,13 +174,7 @@ class ServerManager(commands.Cog):
             "components": [
                 {
                     "type": 12,
-                    "items": [
-                        {
-                            "media": {"url": banner_url},
-                            "description": None,
-                            "spoiler": False,
-                        }
-                    ],
+                    "items": [{"media": {"url": banner_url}}],
                 },
                 {"type": 14, "spacing": 2, "divider": True},
                 {
@@ -262,7 +254,21 @@ class ServerManager(commands.Cog):
             roles_embed = discord.Embed(
                 description=(
                     "# Community Roles\n"
-                    "Select the roles you want from the dropdown below."
+                    "- <@&950276268593659925>: Ente Employee.\n"
+                    "- <@&950275266045960254>: Keeping things smooth and respectful.\n"
+                    "- <@&1452983028476547286>: Driving innovation with ideas and feedback.\n"
+                    "- <@&1452990146197590163>: Starred the GitHub repo.\n\n"
+                    "# Service Roles\n"
+                    "- <@&1312807194487685231>: Focused on all things Ente Photos.\n"
+                    "- <@&1099362028147183759>: Focused on all things Ente Auth.\n"
+                    "- <@&1439921934409400351>: Focused on all things Ente Locker.\n\n"
+                    "# Notification Roles\n"
+                    "- <@&1050340002028077106>: Blog post notifications.\n"
+                    "- <@&1214608287597723739>: Mastodon updates.\n"
+                    "- <@&1400571735904092230>: Bluesky updates.\n"
+                    "- <@&1400571795848958052>: Reddit updates.\n"
+                    "- <@&1403399186023579688>: GitHub discussion updates.\n\n"
+                    "Use the dropdown below to choose which roles you want."
                 ),
                 color=0xFFCD3F,
             )
@@ -274,12 +280,11 @@ class ServerManager(commands.Cog):
             )
 
         elif custom_id == "Channels":
-            channels_embed = discord.Embed(
-                description="Use the server channel list to explore discussions.",
-                color=0xFFCD3F,
-            )
             await interaction.response.send_message(
-                embed=channels_embed,
+                embed=discord.Embed(
+                    description="Use the server channel list to explore discussions.",
+                    color=0xFFCD3F,
+                ),
                 ephemeral=True,
             )
 
@@ -303,24 +308,20 @@ class ServerManager(commands.Cog):
                 if not channel:
                     continue
 
-                referenced_message = await channel.fetch_message(int(match.group(3)))
+                ref = await channel.fetch_message(int(match.group(3)))
 
                 embed = discord.Embed(
-                    description=referenced_message.content or "*[No content]*",
-                    timestamp=referenced_message.created_at,
+                    description=ref.content or "*[No content]*",
+                    timestamp=ref.created_at,
                     color=0xFFCD3F,
                 )
                 embed.set_author(
-                    name=referenced_message.author.display_name,
-                    icon_url=referenced_message.author.display_avatar.url,
+                    name=ref.author.display_name,
+                    icon_url=ref.author.display_avatar.url,
                 )
 
                 image = next(
-                    (
-                        a
-                        for a in referenced_message.attachments
-                        if is_image_attachment(a)
-                    ),
+                    (a for a in ref.attachments if is_image_attachment(a)),
                     None,
                 )
                 if image:
@@ -334,11 +335,9 @@ class ServerManager(commands.Cog):
                 logger.error(f"Error processing message link: {e}")
 
         if message.channel.id == self.target_channel_id:
-            has_image = any(is_image_attachment(a) for a in message.attachments)
-
-            if has_image:
-                for reaction in self.reactions:
-                    await message.add_reaction(reaction)
+            if any(is_image_attachment(a) for a in message.attachments):
+                for r in self.reactions:
+                    await message.add_reaction(r)
 
                 thread = await message.create_thread(
                     name=(
