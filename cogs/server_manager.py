@@ -14,12 +14,10 @@ WELCOME_CHANNEL_ID = 953697188544925756
 TARGET_CHANNEL_ID = 1025978742318833684
 AUTO_THREAD_REACTIONS = ["⭐"]
 
-# Message flag: IS_COMPONENTS_V2 (1 << 15)
 MESSAGE_FLAG_IS_COMPONENTS_V2 = 1 << 15
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
-# Custom emoji IDs
 ROLES_EMOJI_ID = 1439927556202823712
 CHANNELS_EMOJI_ID = 1439927871698239578
 
@@ -280,11 +278,31 @@ class ServerManager(commands.Cog):
             )
 
         elif custom_id == "Channels":
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    description="Use the server channel list to explore discussions.",
-                    color=0xFFCD3F,
+            channels_embed = discord.Embed(
+                description=(
+                    "- 👋 **WELCOME**\n"
+                    "  - **<#953697188544925756>**: Key details about the Ente Community, rules, and guidelines.\n"
+                    "  - **<#948956829982031912>**: Updates and news from the Ente team.\n"
+                    "  - **<#1121470028223623229>**: Links to blog posts and articles.\n"
+                    "  - **<#973177352446173194>**: Updates about Ente’s presence on Mastodon.\n\n"
+                    "- 🐣 **ENTE**\n"
+                    "  - **<#948937919027105865>**: Discussions and support related to Ente Photos.\n"
+                    "  - **<#1051153671985045514>**: Focused on Ente Auth and authentication-related queries.\n"
+                    "  - **<#1383504546361380995>**: Discussions for those interested in hosting Ente services themselves.\n"
+                    "  - **<#1121126215995113552>**: Share suggestions, report bugs, or provide input on Ente products and community.\n"
+                    "  - **<#1364139133794123807>**: Ask for help, Ducky will try to help you out!.\n\n"
+                    "- 💬 **COMMUNITY**\n"
+                    "  - **<#1380262760994177135>**: A place to see who joined the community.\n"
+                    "  - **<#953968250553765908>**: Casual conversations unrelated to Ente products.\n"
+                    "  - **<#1025978742318833684>**: A place for sharing your favorite memories.\n"
+                    "  - **<#1335538661185421386>**: Our wall of love, where all our nice reviews are shown.\n"
+                    "  - **<#948956465635397684>**: Share fun and lighthearted content."
                 ),
+                color=0xFFCD3F,
+            )
+
+            await interaction.response.send_message(
+                embed=channels_embed,
                 ephemeral=True,
             )
 
