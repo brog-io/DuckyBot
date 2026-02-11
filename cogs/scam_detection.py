@@ -39,6 +39,9 @@ SHORTENER_LIST_URL = (
 )
 SHORTENER_WHITELIST = {"youtu.be", "discord.gg"}
 
+# Accounts older than this are excluded from OpenAI scoring, but their links are still checked
+AI_SKIP_ACCOUNT_AGE = timedelta(days=365 * 2)
+
 logger = logging.getLogger(__name__)
 
 # =========================
@@ -243,10 +246,11 @@ class ScamDetection(commands.Cog):
         content = message.content.strip()
         urls = extract_urls(content)
 
-        # Hard domain blocklist check
+        # Hard domain blocklist check, runs for all accounts (including 2+ year accounts)
         for url in urls:
             domain = get_domain(url)
 
+            # If the link is a shortener, attempt to unshorten and then check the final domain
             if domain in self.shortener_domains and domain not in SHORTENER_WHITELIST:
                 final_url = await poggers_unshorten(url)
                 final_domain = get_domain(final_url)
@@ -258,6 +262,7 @@ class ScamDetection(commands.Cog):
                     await self._handle_scam(message, content, 100)
                     return
 
+            # Direct domain check
             if any(
                 domain == scam or domain.endswith("." + scam)
                 for scam in self.scam_domains
@@ -265,18 +270,23 @@ class ScamDetection(commands.Cog):
                 await self._handle_scam(message, content, 100)
                 return
 
-        # AI scoring
+        # Do not spend resources on extremely short messages
         if len(content) < 10:
             return
 
-        bucket = self.cooldowns.get_bucket(message)
-        if bucket.update_rate_limit():
-            return
-
+        # Skip OpenAI scoring for whitelisted roles
         if any(role.id in whitelisted_role_ids for role in message.author.roles):
             return
 
+        # Skip OpenAI scoring for older accounts, but their links were already checked above
         account_age = datetime.now(timezone.utc) - message.author.created_at
+        if account_age >= AI_SKIP_ACCOUNT_AGE:
+            return
+
+        # Apply per-channel cooldown to reduce OpenAI calls
+        bucket = self.cooldowns.get_bucket(message)
+        if bucket.update_rate_limit():
+            return
 
         payload = {
             "content": content,
