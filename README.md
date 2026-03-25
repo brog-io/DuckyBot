@@ -4,7 +4,7 @@
 
 # Ducky — Ente Discord Server Bot
 
-**Ducky** is the custom moderation, support, and community utility bot designed exclusively for the [Ente Discord server](https://ente.io/discord).
+**Ducky** is the custom moderation, support, and community utility bot designed exclusively for the [Ente Discord server](https://ente.com/discord).
 
 > **This bot is not meant for general use or self-hosting.**  
 > It is highly customized for the Ente community.  

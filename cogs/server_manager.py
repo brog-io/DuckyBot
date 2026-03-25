@@ -181,7 +181,9 @@ class ServerManager(commands.Cog):
                         "# Welcome to the Ente Community!\n"
                         "Explore our privacy-first services:\n"
                         "**Ente Photos**: Secure, private photo storage.\n"
-                        "**Ente Auth**: Easy, privacy-focused authentication.\n\n"
+                        "**Ente Auth**: Easy, privacy-focused authentication.\n"
+                        "**Ente Locker**: Save your important documents and credentials.\n"
+                        "**Ensu**: personal LLM app that runs on your device.\n\n"
                         "We’re glad to have you here! 🔐"
                     ),
                 },
@@ -221,7 +223,7 @@ class ServerManager(commands.Cog):
                     "type": 2,
                     "style": 5,
                     "label": "Website",
-                    "url": "https://ente.io",
+                    "url": "https://ente.com",
                 },
             ],
         }

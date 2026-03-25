@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 FEEDS = {
     "blog": {
-        "url": "https://ente.io/rss.xml",
+        "url": "https://ente.com/rss.xml",
         "role_mention": "<@&1050340002028077106>",
         "channel_id": 1121470028223623229,
         "channel_type": "forum",  # "forum" or "text"
@@ -24,7 +24,7 @@ FEEDS = {
         "type": "blog",
     },
     "joy": {
-        "url": "https://joy.ente.io/rss.xml",
+        "url": "https://joy.ente.com/rss.xml",
         "role_mention": "<@&1050340002028077106>",
         "channel_id": 1121470028223623229,
         "channel_type": "forum",
@@ -66,7 +66,7 @@ FEEDS = {
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
         "type": "community",
-        "headers": {"User-Agent": "Ducky/1.0 (https://ente.io; brogio@ente.io)"},
+        "headers": {"User-Agent": "Ducky/1.0 (https://ente.com; brogio@ente.io)"},
     },
     "github": {
         "url": "https://github.com/ente-io/ente/discussions.atom",
