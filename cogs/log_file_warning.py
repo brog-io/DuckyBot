@@ -41,7 +41,7 @@ class LogFileWarning(commands.Cog):
                             "It appears you've uploaded a log file. To protect your privacy and sensitive information:\n\n"
                             "• Log files may contain personal or sensitive data\n"
                             "• We recommend sending logs directly to our support team\n"
-                            "• Please email logs to: support@ente.io\n\n"
+                            "• Please email logs to: support@ente.com\n\n"
                             "*This helps ensure the confidentiality of your information.*",
                             mention_author=True,
                         )

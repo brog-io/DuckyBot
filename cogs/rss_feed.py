@@ -66,7 +66,7 @@ FEEDS = {
         "emoji": "<:Reddit_Logo:1400570705073934397>",
         "name": "Reddit",
         "type": "community",
-        "headers": {"User-Agent": "Ducky/1.0 (https://ente.com; brogio@ente.io)"},
+        "headers": {"User-Agent": "Ducky/1.0 (https://ente.com; contact@brog.io)"},
     },
     "github": {
         "url": "https://github.com/ente-io/ente/discussions.atom",
