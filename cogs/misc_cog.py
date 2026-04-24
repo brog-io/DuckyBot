@@ -22,7 +22,7 @@ class Misc(commands.Cog):
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as session:
-                async with session.get("https://api.ente.io/ping") as resp:
+                async with session.get("https://api.ente.com/ping") as resp:
                     data = await resp.json()
             if resp.status == 200 and data.get("message") == "pong":
                 embed = discord.Embed(

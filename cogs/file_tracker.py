@@ -34,7 +34,7 @@ class RefreshButton(Button):
 
 
 class FileTracker(commands.Cog):
-    API_URL = "https://api.ente.io/files/count"
+    API_URL = "https://api.ente.com/files/count"
     API_TIMEOUT = ClientTimeout(total=10)
     MAX_RETRIES = 3
     RETRY_DELAY = 1
