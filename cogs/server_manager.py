@@ -31,6 +31,7 @@ SELF_ASSIGNABLE_ROLES = {
     "Bluesky": 1400571735904092230,
     "Reddit": 1400571795848958052,
     "GitHub Discussions": 1403399186023579688,
+    "Community pings": 1503369065270611998,
 }
 
 
@@ -256,14 +257,15 @@ class ServerManager(commands.Cog):
                     "# Community Roles\n"
                     "- <@&950276268593659925>: Ente Employee.\n"
                     "- <@&950275266045960254>: Keeping things smooth and respectful.\n"
-                    "- <@&1452983028476547286>: Driving innovation with ideas and feedback.\n"
-                    "- <@&1452990146197590163>: Starred the GitHub repo.\n\n"
+                    "- <@&1452983028476547286>: Driving innovation with ideas and feedback.\n (Via linked roles)"
+                    "- <@&1452990146197590163>: Starred the GitHub repo.(Via linked roles) \n\n"
                     "# Service Roles\n"
                     "- <@&1312807194487685231>: Focused on all things Ente Photos.\n"
                     "- <@&1099362028147183759>: Focused on all things Ente Auth.\n"
                     "- <@&1439921934409400351>: Focused on all things Ente Locker.\n\n"
                     "# Notification Roles\n"
                     "- <@&1050340002028077106>: Blog post notifications.\n"
+                    "- <@&1503369065270611998>: Small community events and announcements. (1 ping a week)\n"
                     "- <@&1214608287597723739>: Mastodon updates.\n"
                     "- <@&1400571735904092230>: Bluesky updates.\n"
                     "- <@&1400571795848958052>: Reddit updates.\n"
