@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord.ui import Button, View, Select
+from discord.ui import Button, View
 from discord import app_commands
 from discord.http import Route
 import re
@@ -20,19 +20,6 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 ROLES_EMOJI_ID = 1439927556202823712
 CHANNELS_EMOJI_ID = 1439927871698239578
-
-# --------- Self-assignable roles ---------
-SELF_ASSIGNABLE_ROLES = {
-    "Ente Photos": 1312807194487685231,
-    "Ente Auth": 1099362028147183759,
-    "Ente Locker": 1439921934409400351,
-    "Blog Posts": 1050340002028077106,
-    "Mastodon": 1214608287597723739,
-    "Bluesky": 1400571735904092230,
-    "Reddit": 1400571795848958052,
-    "GitHub Discussions": 1403399186023579688,
-    "Community pings": 1503369065270611998,
-}
 
 
 def is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -55,72 +42,6 @@ class MessageLinkButton(Button):
             label="Open Message",
             url=message_url,
         )
-
-
-class RoleSelect(Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label=name, value=str(role_id))
-            for name, role_id in SELF_ASSIGNABLE_ROLES.items()
-        ]
-
-        super().__init__(
-            placeholder="Select the roles you want",
-            min_values=0,
-            max_values=len(options),
-            options=options,
-            custom_id="self_roles_select",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        member = interaction.user
-        if not isinstance(member, discord.Member):
-            await interaction.response.send_message(
-                "This can only be used inside the server.",
-                ephemeral=True,
-            )
-            return
-
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message(
-                "Guild not found.",
-                ephemeral=True,
-            )
-            return
-
-        selected_ids = {int(v) for v in self.values}
-        managed_ids = set(SELF_ASSIGNABLE_ROLES.values())
-
-        roles_to_add = []
-        roles_to_remove = []
-
-        for role_id in managed_ids:
-            role = guild.get_role(role_id)
-            if not role:
-                continue
-
-            if role_id in selected_ids and role not in member.roles:
-                roles_to_add.append(role)
-            elif role_id not in selected_ids and role in member.roles:
-                roles_to_remove.append(role)
-
-        if roles_to_add:
-            await member.add_roles(*roles_to_add, reason="Self-assigned roles")
-
-        if roles_to_remove:
-            await member.remove_roles(*roles_to_remove, reason="Self-unassigned roles")
-
-        await interaction.response.send_message(
-            "Your roles have been updated.",
-            ephemeral=True,
-        )
-
-
-class RolesView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(RoleSelect())
 
 
 class ServerManager(commands.Cog):
@@ -269,15 +190,13 @@ class ServerManager(commands.Cog):
                     "- <@&1214608287597723739>: Mastodon updates.\n"
                     "- <@&1400571735904092230>: Bluesky updates.\n"
                     "- <@&1400571795848958052>: Reddit updates.\n"
-                    "- <@&1403399186023579688>: GitHub discussion updates.\n\n"
-                    "Use the dropdown below to choose which roles you want."
+                    "- <@&1403399186023579688>: GitHub discussion updates."
                 ),
                 color=0xFFCD3F,
             )
 
             await interaction.response.send_message(
                 embed=roles_embed,
-                view=RolesView(),
                 ephemeral=True,
             )
 
