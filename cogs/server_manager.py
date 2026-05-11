@@ -287,6 +287,7 @@ class ServerManager(commands.Cog):
                     "- 👋 **WELCOME**\n"
                     "  - **<#953697188544925756>**: Key details about the Ente Community, rules, and guidelines.\n"
                     "  - **<#948956829982031912>**: Updates and news from the Ente team.\n"
+                    "  - **<#1503370083685236896>**: Small community announcements for releases and community events.\n"
                     "  - **<#1121470028223623229>**: Links to blog posts and articles.\n"
                     "  - **<#973177352446173194>**: Updates about Ente’s presence on Mastodon.\n\n"
                     "- 🐣 **ENTE**\n"
