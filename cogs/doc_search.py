@@ -72,36 +72,7 @@ class DocSearch(commands.Cog):
         self.COOLDOWN_SECONDS = 30 * 60  # 15 minutes
 
         # Channel specific auto replies
-        self.CHANNEL_AUTO_REPLIES: dict[int, dict[str, object]] = {
-            1051153671985045514: {
-                "trigger_keywords": [
-                    "2fa",
-                    "authenticator",
-                    "code",
-                    "codes",
-                    "auth",
-                    "otp",
-                ],
-                "problem_keywords": [
-                    "wrong",
-                    "different",
-                    "not working",
-                    "don't work",
-                    "dont work",
-                    "doesnt work",
-                    "doesn't work",
-                    "invalid",
-                    "issue",
-                    "problem",
-                ],
-                "response": (
-                    "If the authenticator codes on your PC and phone are different, "
-                    "make sure the time is correct on both devices. The codes are time based, "
-                    "so even a small time drift can cause invalid codes. "
-                    "You can use <https://time.is/> to see if your device's time is accurate."
-                ),
-            }
-        }
+        self.CHANNEL_AUTO_REPLIES: dict[int, dict[str, object]] = {}
 
         # Selfhosting
         self.SELFHOSTING_KEYWORDS = [
