@@ -56,6 +56,17 @@ FEEDS = {
         "name": "Bluesky",
         "type": "social",
     },
+    "youtube": {
+        "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCt9PsaDKMF1YcO96HzYsD1Q",
+        "button_text": "View Video",
+        "role_mention": "<@&1511064853148602378>",
+        "channel_id": 1400567228314943529,
+        "channel_type": "forum",
+        "tag_id": 1511063810914390290,
+        "emoji": "<:youtube:1511063991810658334>",
+        "name": "YouTube",
+        "type": "social",
+    },
     "reddit": {
         "url": "https://www.reddit.com/r/enteio/new/.rss",
         "button_text": "View Post",
