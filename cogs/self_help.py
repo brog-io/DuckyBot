@@ -106,7 +106,8 @@ class SelfHelp(commands.Cog):
         tags_text = ", ".join(tags) if tags else "None"
         prompt = f"Title: {title}\nTags: {tags_text}\nMessage: {body.strip() or 'No content provided.'}"
 
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 "https://api.poggers.win/api/ente/docs-search",
                 json={"query": prompt, "key": API_KEY},
@@ -146,7 +147,19 @@ class SelfHelp(commands.Cog):
                 for t in (thread.applied_tags or [])
             ]
 
-        answer = await self.query_api(thread.name or body, body, tag_names)
+        try:
+            answer = await self.query_api(thread.name or body, body, tag_names)
+        except asyncio.TimeoutError:
+            await analyzing.edit(
+                content="Sorry, the search timed out. Please try again later."
+            )
+            return
+        except Exception as e:
+            logger.error(f"query_api failed for thread {thread.id}: {e}")
+            await analyzing.edit(
+                content="Sorry, something went wrong while searching. Please try again later."
+            )
+            return
 
         solved_hint = (
             f"</solved:{self.solved_command_id}>"
