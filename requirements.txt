@@ -6,7 +6,7 @@ requests==2.32.4
 cachetools==5.5.2
 aiomysql==0.3.0
 aiosqlite==0.20.0
-PyJWT==2.10.1
+PyJWT==2.13.0
 feedparser==6.0.11
 python-dateutil==2.9.0.post0
 numpy==2.3.2
