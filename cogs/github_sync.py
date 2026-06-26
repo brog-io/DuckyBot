@@ -19,7 +19,7 @@ class GitHubDiscussions(commands.Cog):
         self.bot = bot
 
         self.forum_channel_id = 1121126215995113552
-        self.github_repo = "ente-io/ente"
+        self.github_repo = "ente/ente"
         self.github_discussion_category_id = None
 
         self.github_app_id = os.getenv("GITHUB_APP_ID")

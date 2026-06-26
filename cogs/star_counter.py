@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-GITHUB_API_URL = "https://api.github.com/repos/ente-io/ente"
+GITHUB_API_URL = "https://api.github.com/repos/ente/ente"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Load GitHub token from .env
 
 
@@ -139,7 +139,7 @@ class StarCounter(commands.Cog):
         await self.bot.wait_until_ready()
 
     @app_commands.command(
-        name="stars", description="Get the current star count for ente-io on GitHub"
+        name="stars", description="Get the current star count for ente on GitHub"
     )
     async def stars(self, interaction: discord.Interaction):
         await self.handle_refresh(interaction)
@@ -179,7 +179,7 @@ class StarCounter(commands.Cog):
             if current_count is not None:
                 star_embed = discord.Embed(
                     title="GitHub Star Count",
-                    description=f"[`ente-io/ente`]({GITHUB_API_URL}) currently has **{current_count:,}** stars ⭐",
+                    description=f"[`ente/ente`]({GITHUB_API_URL}) currently has **{current_count:,}** stars ⭐",
                     color=0xFFD700,
                     timestamp=discord.utils.utcnow(),
                 )

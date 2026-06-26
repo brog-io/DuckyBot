@@ -80,7 +80,7 @@ FEEDS = {
         "headers": {"User-Agent": "Ducky/1.0 (https://ente.com; contact@brog.io)"},
     },
     "github": {
-        "url": "https://github.com/ente-io/ente/discussions.atom",
+        "url": "https://github.com/ente/ente/discussions.atom",
         "button_text": "View Post",
         "role_mention": "<@&1403399186023579688>",
         "channel_id": 1423279602318446622,

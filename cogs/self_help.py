@@ -147,17 +147,20 @@ class SelfHelp(commands.Cog):
                 for t in (thread.applied_tags or [])
             ]
 
-        try:
-            answer = await self.query_api(thread.name or body, body, tag_names)
-        except asyncio.TimeoutError:
+        answer = None
+        for attempt in range(2):
+            try:
+                answer = await self.query_api(thread.name or body, body, tag_names)
+                break
+            except asyncio.TimeoutError:
+                logger.warning(f"query_api timeout on attempt {attempt + 1} for thread {thread.id}")
+            except Exception as e:
+                logger.error(f"query_api failed for thread {thread.id}: {e}")
+                break
+
+        if answer is None:
             await analyzing.edit(
-                content="Sorry, the search timed out. Please try again later."
-            )
-            return
-        except Exception as e:
-            logger.error(f"query_api failed for thread {thread.id}: {e}")
-            await analyzing.edit(
-                content="Sorry, something went wrong while searching. Please try again later."
+                content="Sorry, I wasn't able to find an answer right now. Please try again later."
             )
             return
 
