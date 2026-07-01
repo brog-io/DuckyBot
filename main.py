@@ -106,6 +106,14 @@ class EnteBot(commands.Bot):
                 PersistentView as StarCounterView,
                 RefreshButton as StarCounterRefresh,
             )
+            from cogs.registered_accounts import (
+                PersistentView as RegisteredAccountsView,
+                RefreshButton as RegisteredAccountsRefresh,
+            )
+            from cogs.paid_accounts import (
+                PersistentView as PaidAccountsView,
+                RefreshButton as PaidAccountsRefresh,
+            )
 
             view = FileTrackerView()
             view.add_item(FileTrackerRefresh())
@@ -113,6 +121,12 @@ class EnteBot(commands.Bot):
             star_view = StarCounterView()
             star_view.add_item(StarCounterRefresh())
             self.add_view(star_view)
+            registered_view = RegisteredAccountsView()
+            registered_view.add_item(RegisteredAccountsRefresh())
+            self.add_view(registered_view)
+            paid_view = PaidAccountsView()
+            paid_view.add_item(PaidAccountsRefresh())
+            self.add_view(paid_view)
             self.logger.info("Attempting to sync commands...")
             await self.tree.sync()
             cog = self.get_cog("SelfHelp")
