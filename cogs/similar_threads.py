@@ -599,7 +599,7 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
         try:
             response = await asyncio.to_thread(
                 self.openai_client.chat.completions.create,
-                model="gpt-5-mini",
+                model="gpt-5.6-luna",
                 messages=[
                     {
                         "role": "system",

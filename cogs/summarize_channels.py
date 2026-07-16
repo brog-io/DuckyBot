@@ -8,7 +8,6 @@ import io
 
 import openai
 
-
 # ---------- Constants for Discord limits ----------
 EMBED_DESC_MAX = 4096
 FIELD_VALUE_MAX = 1024
@@ -267,7 +266,7 @@ class Summarizer(commands.Cog):
         """Generate a summary using the model, then apply a hard character cap."""
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-5-mini",
+                model="gpt-5.6-luna",
                 messages=[
                     {
                         "role": "system",
