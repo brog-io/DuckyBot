@@ -9,14 +9,6 @@ INTRO_CHANNEL_ID = 1380262760994177135
 WAVE_EMOJI = "👋"
 THREAD_AUTO_ARCHIVE_MINUTES = 10080  # 7 days
 
-STARTER_MESSAGE = (
-    "Welcome, {mention}! {wave} Say hi to them in this thread.\n\n"
-    "If you'd like to share more, here are some ideas:\n"
-    "- What are you working on or building?\n"
-    "- How did you find the server?\n"
-    "- What do you hope to get out of the community?"
-)
-
 
 class Introductions(commands.Cog):
     """Creates a discussion thread for each introduction posted in the intro channel.
@@ -64,13 +56,6 @@ class Introductions(commands.Cog):
         except discord.HTTPException:
             logger.exception("Failed to create thread for intro %s", message.id)
             return
-
-        try:
-            await thread.send(
-                STARTER_MESSAGE.format(mention=message.author.mention, wave=WAVE_EMOJI)
-            )
-        except discord.HTTPException:
-            logger.warning("Failed to send starter message in thread %s", thread.id)
 
         logger.info(
             "Created intro thread %s for %s", thread.id, message.author.display_name
