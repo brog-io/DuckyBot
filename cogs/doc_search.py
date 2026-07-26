@@ -1,15 +1,23 @@
 from __future__ import annotations
 import os
 import re
+import json
 import time
+import logging
 import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 load_dotenv()
 API_KEY = os.getenv("POGGERS_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+logger = logging.getLogger(__name__)
+
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 EXAMPLE_QUERIES = [
     "Why are my authenticator codes different?",
@@ -75,14 +83,6 @@ class DocSearch(commands.Cog):
         self.CHANNEL_AUTO_REPLIES: dict[int, dict[str, object]] = {}
 
         # Selfhosting
-        self.SELFHOSTING_KEYWORDS = [
-            "selfhost",
-            "self-host",
-            "self hosting",
-            "self-hosting",
-            "host myself",
-            "docker",
-        ]
         self.SELFHOSTING_MESSAGE = (
             "If you have a question about selfhosting Ente, please use <#{}>"
         ).format(self.SELFHOSTING_CHANNEL_ID)
@@ -117,6 +117,44 @@ class DocSearch(commands.Cog):
         """Update the cooldown timestamp for a user."""
         self.user_cooldowns[user_id] = time.time()
 
+    async def is_selfhosting_help_request(self, content: str) -> bool:
+        """
+        Uses an LLM to decide whether a message is a genuine question or request
+        for help about self-hosting Ente, as opposed to a message that merely
+        mentions self-hosting in passing (e.g. "You could self-host Ente").
+        """
+        if not openai_client or not content.strip():
+            return False
+
+        system_prompt = (
+            "You are a triage assistant for the Ente Discord community server. "
+            "Decide whether the user's message is a genuine question or request for "
+            "help/information about self-hosting Ente (e.g. \"How do I do X while "
+            "self-hosting?\", \"Can I self-host and still get feature Y?\", \"My "
+            "self-hosted instance won't start\").\n\n"
+            "Do NOT count messages that merely mention self-hosting or a self-hosted "
+            "setup in passing - as a suggestion, opinion, or reference - without "
+            "asking a question or requesting support (e.g. \"You could self-host "
+            "Ente\", \"I self-host Ente and love it\").\n\n"
+            "Return ONLY a JSON object in this exact format: "
+            '{"seeking_help": true or false}. Do not include explanations or extra fields.'
+        )
+
+        try:
+            response = await openai_client.chat.completions.create(
+                model="gpt-5.6-luna",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content},
+                ],
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(response.choices[0].message.content.strip())
+            return bool(data.get("seeking_help", False))
+        except Exception as e:
+            logger.error(f"Selfhosting intent classification error: {e}")
+            return False
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or not message.guild:
@@ -144,9 +182,9 @@ class DocSearch(commands.Cog):
                 return
 
         # Selfhosting redirect
-        if any(
-            word in content for word in self.SELFHOSTING_KEYWORDS
-        ) and not self.is_in_exempt_channel(message):
+        if not self.is_in_exempt_channel(message) and await self.is_selfhosting_help_request(
+            message.content
+        ):
             await message.reply(self.SELFHOSTING_MESSAGE, mention_author=False)
             self.update_cooldown(message.author.id)
             return
