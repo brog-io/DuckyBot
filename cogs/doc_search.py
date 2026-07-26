@@ -83,6 +83,28 @@ class DocSearch(commands.Cog):
         self.CHANNEL_AUTO_REPLIES: dict[int, dict[str, object]] = {}
 
         # Selfhosting
+        # Cheap pre-filter so we only spend an LLM call on messages that could
+        # plausibly be about self-hosting. The LLM still decides whether it's
+        # a genuine help request vs. just a mention.
+        self.SELFHOSTING_KEYWORDS = [
+            "selfhost",
+            "self-host",
+            "self hosting",
+            "self-hosting",
+            "self hosted",
+            "self-hosted",
+            "host myself",
+            "hosting myself",
+            "docker",
+            "docker-compose",
+            "own server",
+            "own instance",
+            "nas",
+            "unraid",
+            "synology",
+            "vps",
+            "homelab",
+        ]
         self.SELFHOSTING_MESSAGE = (
             "If you have a question about selfhosting Ente, please use <#{}>"
         ).format(self.SELFHOSTING_CHANNEL_ID)
@@ -182,8 +204,10 @@ class DocSearch(commands.Cog):
                 return
 
         # Selfhosting redirect
-        if not self.is_in_exempt_channel(message) and await self.is_selfhosting_help_request(
-            message.content
+        if (
+            not self.is_in_exempt_channel(message)
+            and any(k in content for k in self.SELFHOSTING_KEYWORDS)
+            and await self.is_selfhosting_help_request(message.content)
         ):
             await message.reply(self.SELFHOSTING_MESSAGE, mention_author=False)
             self.update_cooldown(message.author.id)
