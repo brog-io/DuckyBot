@@ -1,700 +1,795 @@
-import discord
-from discord.ext import commands, tasks
-import json
+"""Suggest previously-solved forum threads when a new question is posted.
+
+The cog keeps an on-disk index of solved posts:
+
+  * ``solved_posts_index.json``      - metadata only (title, body, url, ...)
+  * ``solved_posts_embeddings.npz``  - the embedding matrix, L2-normalised
+
+Splitting the two keeps the JSON small and human-readable while the vectors
+live in a compact binary file. An index written by the older version of this
+cog (embeddings inline in the JSON) is migrated automatically on first load.
+"""
+
+from __future__ import annotations
+
 import asyncio
-import openai
-import numpy as np
-import os
+import json
 import logging
-from datetime import datetime, timedelta, timezone  # ADD: Import timezone
+import os
 import time
-from typing import List, Dict, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import discord
+import numpy as np
+from discord.ext import commands, tasks
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+
+DATA_DIR = Path(".")
+META_FILE = DATA_DIR / "solved_posts_index.json"
+VECTOR_FILE = DATA_DIR / "solved_posts_embeddings.npz"
+
+FORUM_CHANNEL_ID = 1383504546361380995
+SOLVED_TAG_ID = 1383506837252472982
+SOLVED_TAG_NAME = "Solved"
+
+# text-embedding-3-* support Matryoshka truncation via `dimensions`, so
+# 3-large at 1536 dims gives better retrieval than 3-small at the same
+# storage cost. Changing either value re-indexes the corpus automatically.
+EMBED_MODEL = "text-embedding-3-large"
+EMBED_DIMENSIONS = 1536
+RANKING_MODEL = "gpt-5.6-luna"
+
+SIMILARITY_THRESHOLD = 0.55
+EMBED_BATCH_SIZE = 100
+EMBED_MAX_RETRIES = 3
+EMBED_TIMEOUT = 60
+RERANK_TIMEOUT = 45
+
+# Candidates handed to the embedding shortlist and then to the LLM reranker.
+SHORTLIST_SIZE = 8
+RERANK_SIZE = 5
+MAX_SUGGESTIONS = 3
+
+# Give the self-help cog time to post its answer before piling on.
+NOTIFY_DELAY = 50
+
+# Cap per refresh run so a model change can't produce one enormous bill.
+REFRESH_BATCH_LIMIT = 250
+
+ARCHIVED_SCAN_LIMIT = 100
+ARCHIVED_MAX_NEW = 50
+ARCHIVED_MAX_AGE_DAYS = 30
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_dt(value: str | None) -> datetime:
+    """Parse an ISO timestamp, always returning something timezone-aware."""
+    if value:
+        try:
+            dt = datetime.fromisoformat(value)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            pass
+    return datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+
+def _normalise(vectors: np.ndarray) -> np.ndarray:
+    """L2-normalise row-wise so cosine similarity is a plain dot product."""
+    vectors = np.asarray(vectors, dtype=np.float32)
+    if vectors.ndim == 1:
+        vectors = vectors.reshape(1, -1)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return vectors / norms
+
+
+# --------------------------------------------------------------------------
+# Index
+# --------------------------------------------------------------------------
+
+
+class SolvedPostIndex:
+    """Metadata + a normalised embedding matrix, persisted side by side."""
+
+    def __init__(self, meta_path: Path, vector_path: Path):
+        self.meta_path = Path(meta_path)
+        self.vector_path = Path(vector_path)
+
+        self.posts: dict[str, dict] = {}
+        self.ids: list[str] = []
+        self.matrix: np.ndarray | None = None
+
+        # The model the stored vectors were produced with. Queries are
+        # embedded to match the index, not the config, so retrieval keeps
+        # working while a migration to a new model is still in progress.
+        self.model: str = EMBED_MODEL
+        self.dimensions: int = EMBED_DIMENSIONS
+
+        self._rows: dict[str, int] = {}
+        self.migrated_from_legacy = False
+
+    # -- persistence -------------------------------------------------------
+
+    def _load_sync(self) -> None:
+        posts: dict[str, dict] = {}
+        legacy_vectors: dict[str, list[float]] = {}
+
+        if self.meta_path.exists():
+            try:
+                raw = self.meta_path.read_text(encoding="utf-8").strip()
+                posts = json.loads(raw) if raw else {}
+            except (OSError, ValueError) as e:
+                logger.error(f"Could not read {self.meta_path}: {e!r}; starting empty")
+                posts = {}
+
+        # Old format kept the vector inline under "embedding".
+        for post_id, data in list(posts.items()):
+            if isinstance(data, dict) and "embedding" in data:
+                vector = data.pop("embedding")
+                if vector:
+                    legacy_vectors[str(post_id)] = vector
+                self.migrated_from_legacy = True
+
+        posts = {str(k): v for k, v in posts.items() if isinstance(v, dict)}
+
+        ids: list[str] = []
+        matrix: np.ndarray | None = None
+        model, dimensions = EMBED_MODEL, EMBED_DIMENSIONS
+
+        if legacy_vectors:
+            ids = [pid for pid in legacy_vectors if pid in posts]
+            if ids:
+                matrix = _normalise(np.array([legacy_vectors[i] for i in ids]))
+                # Legacy files were always text-embedding-3-small at 1536.
+                model = posts[ids[0]].get("embedding_model", "text-embedding-3-small")
+                dimensions = matrix.shape[1]
+            logger.info(f"Migrating {len(ids)} inline embeddings to {self.vector_path}")
+        elif self.vector_path.exists():
+            try:
+                with np.load(self.vector_path, allow_pickle=False) as bundle:
+                    ids = [str(x) for x in bundle["ids"].tolist()]
+                    matrix = np.asarray(bundle["vectors"], dtype=np.float32)
+                    if "model" in bundle:
+                        model = str(bundle["model"].item())
+                    if "dimensions" in bundle:
+                        dimensions = int(bundle["dimensions"].item())
+            except (OSError, ValueError, KeyError) as e:
+                logger.error(f"Could not read {self.vector_path}: {e!r}; ignoring")
+                ids, matrix = [], None
+
+        # Drop anything that lost its partner on either side.
+        if matrix is not None and len(ids) == matrix.shape[0]:
+            keep = [i for i, pid in enumerate(ids) if pid in posts]
+            if len(keep) != len(ids):
+                logger.warning(f"Dropping {len(ids) - len(keep)} orphaned vectors")
+                ids = [ids[i] for i in keep]
+                matrix = matrix[keep] if keep else None
+            if matrix is not None and matrix.size:
+                dimensions = matrix.shape[1]
+        else:
+            if matrix is not None:
+                logger.error("Vector/id count mismatch; rebuilding index from scratch")
+            ids, matrix = [], None
+
+        self.posts = posts
+        self.ids = ids
+        self.matrix = matrix
+        self.model = model
+        self.dimensions = dimensions
+        self._reindex_rows()
+
+        logger.info(
+            f"Loaded {len(self.posts)} solved posts "
+            f"({len(self.ids)} embedded, {self.model}@{self.dimensions})"
+        )
+
+    def _save_sync(self) -> None:
+        self.meta_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_meta = self.meta_path.with_suffix(self.meta_path.suffix + ".tmp")
+        tmp_meta.write_text(
+            json.dumps(self.posts, separators=(",", ":")), encoding="utf-8"
+        )
+        tmp_meta.replace(self.meta_path)
+
+        tmp_vec = self.vector_path.with_suffix(self.vector_path.suffix + ".tmp")
+        matrix = (
+            self.matrix
+            if self.matrix is not None
+            else np.zeros((0, self.dimensions), dtype=np.float32)
+        )
+        # Write through a handle: np.savez_* appends ".npz" to bare paths.
+        with open(tmp_vec, "wb") as fh:
+            np.savez_compressed(
+                fh,
+                ids=np.array(self.ids, dtype="U32"),
+                vectors=matrix,
+                model=np.array(self.model),
+                dimensions=np.array(self.dimensions),
+            )
+        tmp_vec.replace(self.vector_path)
+
+    async def load(self) -> None:
+        await asyncio.to_thread(self._load_sync)
+
+    async def save(self) -> None:
+        await asyncio.to_thread(self._save_sync)
+
+    # -- mutation ----------------------------------------------------------
+
+    def _reindex_rows(self) -> None:
+        self._rows = {pid: i for i, pid in enumerate(self.ids)}
+
+    def add_many(self, entries: list[tuple[str, dict, list[float]]]) -> int:
+        """Add (post_id, metadata, vector) triples. Existing ids are skipped."""
+        fresh = [
+            (pid, meta, vec) for pid, meta, vec in entries if pid not in self._rows
+        ]
+        if not fresh:
+            return 0
+
+        block = _normalise(np.array([vec for _, _, vec in fresh], dtype=np.float32))
+        if self.matrix is None or self.matrix.size == 0:
+            self.matrix = block
+        elif block.shape[1] != self.matrix.shape[1]:
+            logger.error(
+                f"Refusing to add {block.shape[1]}-dim vectors to a "
+                f"{self.matrix.shape[1]}-dim index"
+            )
+            return 0
+        else:
+            self.matrix = np.vstack([self.matrix, block])
+
+        for pid, meta, _ in fresh:
+            self.posts[pid] = meta
+            self.ids.append(pid)
+        self._reindex_rows()
+        self.dimensions = self.matrix.shape[1]
+        return len(fresh)
+
+    def replace_all_vectors(
+        self, ids: list[str], vectors: np.ndarray, model: str, dimensions: int
+    ) -> None:
+        """Swap in a freshly embedded matrix after a model change."""
+        self.ids = list(ids)
+        self.matrix = _normalise(vectors) if len(ids) else None
+        self.model = model
+        self.dimensions = dimensions
+        self._reindex_rows()
+
+    def remove_many(self, post_ids: list[str]) -> int:
+        doomed = {pid for pid in post_ids if pid in self.posts or pid in self._rows}
+        if not doomed:
+            return 0
+
+        for pid in doomed:
+            self.posts.pop(pid, None)
+
+        if self.matrix is not None and self.ids:
+            keep = [i for i, pid in enumerate(self.ids) if pid not in doomed]
+            self.ids = [self.ids[i] for i in keep]
+            self.matrix = self.matrix[keep] if keep else None
+            self._reindex_rows()
+        return len(doomed)
+
+    # -- query -------------------------------------------------------------
+
+    def search(
+        self, query_vector: np.ndarray, threshold: float, limit: int
+    ) -> list[tuple[str, float]]:
+        """Return (post_id, cosine similarity) pairs above the threshold."""
+        if self.matrix is None or not self.ids:
+            return []
+
+        query = _normalise(query_vector)[0]
+        if query.shape[0] != self.matrix.shape[1]:
+            logger.error(
+                f"Query is {query.shape[0]}-dim but index is "
+                f"{self.matrix.shape[1]}-dim; skipping search"
+            )
+            return []
+
+        # Both sides are normalised, so the dot product *is* cosine similarity.
+        scores = self.matrix @ query
+        hits = np.flatnonzero(scores > threshold)
+        if hits.size == 0:
+            return []
+
+        ranked = hits[np.argsort(-scores[hits])][:limit]
+        return [(self.ids[i], float(scores[i])) for i in ranked]
+
+    @property
+    def needs_reindex(self) -> bool:
+        return bool(self.ids) and (
+            self.model != EMBED_MODEL or self.dimensions != EMBED_DIMENSIONS
+        )
+
+    def missing_vectors(self) -> list[str]:
+        return [pid for pid in self.posts if pid not in self._rows]
+
+
+# --------------------------------------------------------------------------
+# Cog
+# --------------------------------------------------------------------------
 
 
 class ForumSimilarityBot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.forum_channel_id = 1383504546361380995
-        self.similarity_threshold = 0.55
-        self.solved_posts_file = "solved_posts_index.json"
-        self.solved_tag_name = "Solved"
 
-        # ADD: Thread-safe operations
-        self._file_lock = asyncio.Lock()
-        self._processing_threads = set()  # Track threads being processed
+        api_key = os.getenv("OPENAI_API_KEY")
+        self.openai_client = AsyncOpenAI(api_key=api_key) if api_key else None
+        if not self.openai_client:
+            logger.warning("OPENAI_API_KEY is not set; similarity search is disabled")
 
-        # Optimization settings
-        self.embedding_model = "text-embedding-3-small"
-        self.embedding_version = "v1"
-        self.batch_size = 100
-        self.max_retries = 3
-        self.cache_duration_days = 60
+        self.forum_channel_id = FORUM_CHANNEL_ID
+        self.index = SolvedPostIndex(META_FILE, VECTOR_FILE)
 
-        # Performance tracking
+        self._write_lock = asyncio.Lock()
+        self._processing_threads: set[str] = set()
+
         self.stats = {
             "embeddings_generated": 0,
-            "cache_hits": 0,
             "similarity_checks": 0,
             "matches_found": 0,
+            "rerank_failures": 0,
         }
 
-        # Initialize cache before loading data
-        self.embedding_cache = {}
+    async def cog_load(self) -> None:
+        await self.index.load()
+        if self.index.migrated_from_legacy:
+            async with self._write_lock:
+                await self.index.save()
+            logger.info("Legacy index migrated to the split metadata/vector format")
 
-        # Load existing data
-        self.solved_posts = self.load_solved_posts()
-
-        # Start background tasks
         self.check_new_solved_posts.start()
-        self.refresh_old_embeddings.start()
+        self.refresh_stale_embeddings.start()
 
-    # HELPER METHOD: Get timezone-aware datetime
-    def _now_utc(self):
-        """Get current UTC datetime with timezone info"""
-        return datetime.now(timezone.utc)
+    def cog_unload(self) -> None:
+        self.check_new_solved_posts.cancel()
+        self.refresh_stale_embeddings.cancel()
 
-    # HELPER METHOD: Parse datetime with timezone handling
-    def _parse_datetime_safe(
-        self, dt_string: str, default: str = "2020-01-01T00:00:00+00:00"
-    ):
-        """Parse datetime string and ensure it's timezone-aware"""
-        try:
-            dt = datetime.fromisoformat(dt_string)
-            # If naive, assume UTC
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except (ValueError, TypeError):
-            return datetime.fromisoformat(default)
+    # -- OpenAI ------------------------------------------------------------
 
-    def load_solved_posts(self):
-        try:
-            with open(self.solved_posts_file, "r") as f:
-                content = f.read().strip()
-                if not content:
-                    return {}
-                data = json.loads(content)
-                # Load embeddings into memory for faster access
-                self.preload_embeddings(data)
-                return data
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.warning(f"Could not load solved posts file: {e}")
-            logger.info("Starting with empty index...")
-            return {}
+    async def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        dimensions: int | None = None,
+    ) -> list[list[float] | None]:
+        """Embed texts in batches. Failed batches come back as None entries."""
+        if not texts or not self.openai_client:
+            return [None] * len(texts)
 
-    def preload_embeddings(self, posts_data):
-        """Load frequently used embeddings into memory"""
-        recent_cutoff = self._now_utc() - timedelta(days=7)
-        for post_id, post_data in posts_data.items():
-            if post_data.get("embedding"):
-                indexed_at = self._parse_datetime_safe(
-                    post_data.get("indexed_at", "2020-01-01T00:00:00+00:00")
-                )
-                if indexed_at > recent_cutoff:
-                    self.embedding_cache[post_id] = np.array(post_data["embedding"])
+        model = model or self.index.model
+        dimensions = dimensions or self.index.dimensions
 
-    async def save_solved_posts(self):
-        """Thread-safe save with duplicate prevention"""
-        async with self._file_lock:
-            # ADDED: Remove any potential duplicates before saving
-            self._remove_duplicates()
+        kwargs: dict = {"model": model}
+        # Only the v3 models accept Matryoshka truncation.
+        if model.startswith("text-embedding-3"):
+            kwargs["dimensions"] = dimensions
 
-            # Convert numpy arrays back to lists for JSON serialization
-            serializable_data = {}
-            for post_id, post_data in self.solved_posts.items():
-                serializable_data[post_id] = post_data.copy()
-                if "embedding" in serializable_data[post_id] and isinstance(
-                    serializable_data[post_id]["embedding"], np.ndarray
-                ):
-                    serializable_data[post_id]["embedding"] = serializable_data[
-                        post_id
-                    ]["embedding"].tolist()
-
-            # Use compact JSON for embeddings (no pretty printing)
-            with open(self.solved_posts_file, "w") as f:
-                json.dump(serializable_data, f, separators=(",", ":"))
-
-    def _remove_duplicates(self):
-        """Remove duplicate entries based on thread ID"""
-        # Convert all keys to strings to ensure consistency
-        cleaned_posts = {}
-        seen_ids = set()
-
-        for post_id, post_data in self.solved_posts.items():
-            str_id = str(post_id)
-            if str_id not in seen_ids:
-                cleaned_posts[str_id] = post_data
-                seen_ids.add(str_id)
-            else:
-                logger.warning(f"Removed duplicate entry for thread {str_id}")
-
-        self.solved_posts = cleaned_posts
-
-    async def generate_embeddings_batch(
-        self, texts: List[str]
-    ) -> List[Optional[List[float]]]:
-        """Generate embeddings in batches for efficiency"""
-        if not texts:
-            return []
-
-        all_embeddings = []
-
-        # Process in batches of 100 (OpenAI limit is 2048, but 100 is safer)
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i : i + self.batch_size]
-
-            for attempt in range(self.max_retries):
+        results: list[list[float] | None] = []
+        for start in range(0, len(texts), EMBED_BATCH_SIZE):
+            batch = texts[start : start + EMBED_BATCH_SIZE]
+            for attempt in range(1, EMBED_MAX_RETRIES + 1):
                 try:
-                    response = await asyncio.to_thread(
-                        self.openai_client.embeddings.create,
-                        model=self.embedding_model,
-                        input=batch,
+                    response = await self.openai_client.embeddings.create(
+                        input=batch, timeout=EMBED_TIMEOUT, **kwargs
                     )
-
-                    batch_embeddings = [data.embedding for data in response.data]
-                    all_embeddings.extend(batch_embeddings)
-                    self.stats["embeddings_generated"] += len(batch_embeddings)
+                    results.extend(item.embedding for item in response.data)
+                    self.stats["embeddings_generated"] += len(batch)
                     break
-
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
-                    if attempt == self.max_retries - 1:
+                    if attempt == EMBED_MAX_RETRIES:
                         logger.error(
-                            f"Failed to generate embeddings after {self.max_retries} attempts: {e}"
+                            f"Embedding batch failed after {EMBED_MAX_RETRIES} "
+                            f"attempts: {e!r}"
                         )
-                        all_embeddings.extend([None] * len(batch))
+                        results.extend([None] * len(batch))
                     else:
-                        await asyncio.sleep(2**attempt)  # Exponential backoff
+                        logger.warning(f"Embedding attempt {attempt} failed: {e!r}")
+                        await asyncio.sleep(2**attempt)
+        return results
 
-        return all_embeddings
+    async def embed_one(self, text: str) -> list[float] | None:
+        return (await self.embed_texts([text]))[0]
 
-    async def generate_embedding(self, text: str) -> Optional[List[float]]:
-        """Generate single embedding with caching"""
-        embeddings = await self.generate_embeddings_batch([text])
-        return embeddings[0] if embeddings else None
+    async def rerank(
+        self, title: str, body: str, candidates: list[dict]
+    ) -> list[dict] | None:
+        """Ask the LLM which shortlisted posts actually help. None on failure."""
+        if not candidates or not self.openai_client:
+            return None
 
-    def get_embedding_from_cache(self, post_id: str) -> Optional[np.ndarray]:
-        """Get embedding from memory cache or load from data"""
-        if post_id in self.embedding_cache:
-            self.stats["cache_hits"] += 1
-            return self.embedding_cache[post_id]
-
-        post_data = self.solved_posts.get(post_id)
-        if post_data and "embedding" in post_data:
-            embedding = np.array(post_data["embedding"])
-            self.embedding_cache[post_id] = embedding
-            return embedding
-
-        return None
-
-    def cosine_similarity_optimized(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Optimized cosine similarity calculation"""
-        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-    @tasks.loop(minutes=30)
-    async def check_new_solved_posts(self):
-        """Check for newly solved posts with batch processing and deduplication"""
-        await self.bot.wait_until_ready()
-
-        # ADDED: Wait a bit after bot startup to avoid API spam
-        if not hasattr(self, "_first_run_done"):
-            await asyncio.sleep(10)
-            self._first_run_done = True
-
-        forum_channel = self.bot.get_channel(self.forum_channel_id)
-        if not forum_channel:
-            return
-
-        # CHANGED: Use set to prevent duplicates, then convert to list
-        new_thread_ids = set()
-        new_threads = []
-
-        try:
-            # Collect new solved threads from active threads
-            for thread in forum_channel.threads:
-                thread_id = str(thread.id)
-                if (
-                    self.is_thread_solved(thread)
-                    and thread_id not in self.solved_posts
-                    and thread_id
-                    not in self._processing_threads  # ADDED: Check if already being processed
-                ):
-                    if thread_id not in new_thread_ids:  # ADDED: Deduplicate
-                        new_thread_ids.add(thread_id)
-                        new_threads.append(thread)
-
-            # Check archived threads (limited batch) - prioritize recent ones
-            count = 0
-            # FIX: Use timezone-aware datetime
-            cutoff_date = self._now_utc() - timedelta(
-                days=30
-            )  # Only check recent archived threads
-            async for thread in forum_channel.archived_threads(limit=100):
-                if count >= 50:
-                    break
-
-                # FIX: Safe datetime comparison - thread.created_at is timezone-aware
-                if thread.created_at < cutoff_date:
-                    continue
-
-                thread_id = str(thread.id)
-                if (
-                    self.is_thread_solved(thread)
-                    and thread_id not in self.solved_posts
-                    and thread_id
-                    not in self._processing_threads  # ADDED: Check if already being processed
-                ):
-                    if thread_id not in new_thread_ids:  # ADDED: Deduplicate
-                        new_thread_ids.add(thread_id)
-                        new_threads.append(thread)
-                        count += 1
-
-            if new_threads:
-                # ADDED: Mark threads as being processed
-                for thread in new_threads:
-                    self._processing_threads.add(str(thread.id))
-
-                try:
-                    successfully_added = await self.batch_add_threads_to_index(
-                        new_threads
-                    )
-                    logger.info(
-                        f"Successfully added {successfully_added} new solved posts. Total: {len(self.solved_posts)}"
-                    )
-                finally:
-                    # ADDED: Remove from processing set
-                    for thread in new_threads:
-                        self._processing_threads.discard(str(thread.id))
-
-        except Exception as e:
-            logger.error(f"Error checking for new solved posts: {e}")
-            # ADDED: Clean up processing set on error
-            for thread in new_threads:
-                self._processing_threads.discard(str(thread.id))
-
-    @tasks.loop(hours=24)
-    async def refresh_old_embeddings(self):
-        """Refresh embeddings older than cache duration"""
-        await self.bot.wait_until_ready()
-
-        cutoff_date = self._now_utc() - timedelta(days=self.cache_duration_days)
-        old_posts = []
-
-        for post_id, post_data in self.solved_posts.items():
-            indexed_date = self._parse_datetime_safe(
-                post_data.get("indexed_at", "2020-01-01T00:00:00+00:00")
-            )
-            if (
-                indexed_date < cutoff_date
-                and post_data.get("embedding_version") != self.embedding_version
-            ):
-                old_posts.append((post_id, post_data))
-
-        if old_posts:
-            logger.info(f"Refreshing {len(old_posts)} old embeddings...")
-            await self.batch_update_embeddings(old_posts)
-
-    async def batch_add_threads_to_index(self, threads: List[discord.Thread]) -> int:
-        """Add multiple threads to index with batch embedding generation"""
-        if not threads:
-            return 0
-
-        # ADDED: Final check for duplicates before processing
-        unique_threads = []
-        for thread in threads:
-            if str(thread.id) not in self.solved_posts:
-                unique_threads.append(thread)
-            else:
-                logger.info(f"Skipping duplicate thread {thread.id} during batch add")
-
-        if not unique_threads:
-            return 0
-
-        # Collect all texts for batch processing
-        texts = []
-        thread_data = []
-        failed_threads = []
-
-        for thread in unique_threads:
-            try:
-                # IMPROVED: Try multiple methods to get thread content
-                starter_message = None
-                combined_text = None
-
-                # Method 1: Try fetching with thread.id (original starter message)
-                try:
-                    starter_message = await thread.fetch_message(thread.id)
-                    combined_text = f"Title: {thread.name or 'Untitled'}\nBody: {starter_message.content or ''}"
-                except discord.NotFound:
-                    # Method 2: Try getting the first message from history
-                    try:
-                        async for message in thread.history(limit=1, oldest_first=True):
-                            starter_message = message
-                            combined_text = f"Title: {thread.name or 'Untitled'}\nBody: {message.content or ''}"
-                            break
-                    except discord.Forbidden:
-                        # Method 3: Use just the title if we can't access messages
-                        combined_text = f"Title: {thread.name or 'Untitled'}\nBody: [Content not accessible]"
-                        logger.warning(
-                            f"Could not access messages for thread {thread.id}, using title only"
-                        )
-                except discord.Forbidden:
-                    # No permission to read messages, use title only
-                    combined_text = f"Title: {thread.name or 'Untitled'}\nBody: [Content not accessible]"
-                    logger.warning(
-                        f"No permission to read messages for thread {thread.id}, using title only"
-                    )
-
-                if combined_text:
-                    texts.append(combined_text)
-                    thread_data.append(
-                        {
-                            "thread": thread,
-                            "starter_message": starter_message,
-                            "text": combined_text,
-                        }
-                    )
-                else:
-                    failed_threads.append(thread.id)
-                    logger.warning(f"Could not get any content for thread {thread.id}")
-
-            except Exception as e:
-                failed_threads.append(thread.id)
-                # IMPROVED: More specific error logging
-                if "10008" in str(e):  # Unknown Message
-                    logger.warning(
-                        f"Starter message not found for thread {thread.id} ({thread.name}): Message may have been deleted"
-                    )
-                elif "50001" in str(e):  # Missing Access
-                    logger.warning(
-                        f"No access to thread {thread.id} ({thread.name}): Missing permissions"
-                    )
-                else:
-                    logger.error(
-                        f"Unexpected error preparing thread {thread.id} ({thread.name}): {e}"
-                    )
-                continue
-
-        if failed_threads:
-            logger.info(
-                f"Failed to process {len(failed_threads)} threads out of {len(unique_threads)}"
-            )
-
-        if not texts:
-            logger.warning("No threads could be processed for embedding generation")
-            return 0
-
-        # Generate embeddings in batch
-        embeddings = await self.generate_embeddings_batch(texts)
-
-        # Store results
-        successful_adds = 0
-        for i, data in enumerate(thread_data):
-            if i < len(embeddings) and embeddings[i]:
-                thread = data["thread"]
-                starter_message = data["starter_message"]
-                thread_id = str(thread.id)
-
-                # ADDED: Double-check before storing
-                if thread_id not in self.solved_posts:
-                    # Store in index
-                    self.solved_posts[thread_id] = {
-                        "title": thread.name or "Untitled",
-                        "body": (
-                            starter_message.content
-                            if starter_message
-                            else "[Content not accessible]"
-                        ),
-                        "author_id": (
-                            starter_message.author.id if starter_message else None
-                        ),
-                        # FIX: Store datetime as ISO string with timezone
-                        "created_at": thread.created_at.isoformat(),
-                        "indexed_at": self._now_utc().isoformat(),
-                        "url": thread.jump_url,
-                        "embedding": embeddings[i],
-                        "embedding_version": self.embedding_version,
-                        "content_accessible": starter_message
-                        is not None,  # Track if we got the actual content
-                    }
-
-                    # Add to memory cache
-                    self.embedding_cache[thread_id] = np.array(embeddings[i])
-                    successful_adds += 1
-                else:
-                    logger.warning(f"Thread {thread_id} already exists, skipping")
-
-        await self.save_solved_posts()
-
-        if successful_adds > 0:
-            logger.info(f"Successfully indexed {successful_adds} threads")
-        if failed_threads:
-            logger.info(
-                f"Could not index {len(failed_threads)} threads due to access issues"
-            )
-
-        # Return the count of successful additions for accurate logging
-        return successful_adds
-
-    async def batch_update_embeddings(self, old_posts: List[Tuple[str, Dict]]):
-        """Update embeddings for old posts in batches"""
-        texts = []
-        post_ids = []
-
-        for post_id, post_data in old_posts:
-            combined_text = f"Title: {post_data['title']}\nBody: {post_data['body']}"
-            texts.append(combined_text)
-            post_ids.append(post_id)
-
-        embeddings = await self.generate_embeddings_batch(texts)
-
-        for i, post_id in enumerate(post_ids):
-            if i < len(embeddings) and embeddings[i]:
-                self.solved_posts[post_id]["embedding"] = embeddings[i]
-                self.solved_posts[post_id]["embedding_version"] = self.embedding_version
-                self.solved_posts[post_id]["refreshed_at"] = self._now_utc().isoformat()
-
-                # Update cache
-                self.embedding_cache[post_id] = np.array(embeddings[i])
-
-        await self.save_solved_posts()  # CHANGED: Made async
-
-    def is_thread_solved(self, thread):
-        """Check if a thread has the solved tag"""
-        if hasattr(thread, "applied_tags"):
-            for tag in thread.applied_tags:
-                if tag.name == self.solved_tag_name:
-                    return True
-        return False
-
-    async def add_thread_to_index(self, thread):
-        """Add single thread to index (fallback for immediate updates)"""
-        thread_id = str(thread.id)
-
-        # ADDED: Check if already processing or exists
-        if thread_id in self._processing_threads or thread_id in self.solved_posts:
-            logger.info(f"Thread {thread_id} already being processed or exists")
-            return
-
-        # ADDED: Mark as processing
-        self._processing_threads.add(thread_id)
-
-        try:
-            await self.batch_add_threads_to_index([thread])
-        finally:
-            # ADDED: Always remove from processing set
-            self._processing_threads.discard(thread_id)
-
-    async def find_similar_solved_posts_optimized(
-        self, title: str, body: str
-    ) -> List[Dict]:
-        """Optimized similarity search with smart filtering"""
-        logger.info(
-            f"Starting similarity search with {len(self.solved_posts)} solved posts"
+        shortlist = candidates[:RERANK_SIZE]
+        payload = [
+            {"id": c["id"], "title": c["title"], "body": c["body"][:150]}
+            for c in shortlist
+        ]
+        prompt = (
+            f'New post: "{title}"\n{body[:400]}\n\n'
+            f"Candidate solved posts:\n{json.dumps(payload, indent=1)}\n\n"
+            'Return JSON: {"matches": [{"id": "<id>", "reason": "<short why>"}]}\n'
+            "Include only posts that would genuinely help solve the new post, "
+            "best first. Return an empty list if none of them help."
         )
 
-        if not self.solved_posts:
-            logger.info("No solved posts in index")
-            return []
-
-        start_time = time.time()
-
-        # Generate embedding for new post
-        new_text = f"Title: {title}\nBody: {body}"
-        logger.info(f"Generating embedding for: '{title[:50]}...'")
-        new_embedding = await self.generate_embedding(new_text)
-        if not new_embedding:
-            logger.info("Failed to generate embedding")
-            return []
-
-        new_embedding_np = np.array(new_embedding)
-
-        # Calculate similarities with vectorized operations where possible
-        similarities = []
-        embedding_batch = []
-        post_ids_batch = []
-        post_data_batch = []
-
-        # Collect embeddings for vectorized comparison
-        for post_id, post_data in self.solved_posts.items():
-            embedding = self.get_embedding_from_cache(post_id)
-            if embedding is not None:
-                embedding_batch.append(embedding)
-                post_ids_batch.append(post_id)
-                post_data_batch.append(post_data)
-
-        logger.info(f"Comparing against {len(embedding_batch)} posts with embeddings")
-
-        # Vectorized similarity calculation
-        if embedding_batch:
-            embedding_matrix = np.vstack(embedding_batch)
-            similarities_batch = np.dot(embedding_matrix, new_embedding_np) / (
-                np.linalg.norm(embedding_matrix, axis=1)
-                * np.linalg.norm(new_embedding_np)
-            )
-
-            # Filter by threshold and prepare results
-            above_threshold = 0
-            for i, similarity in enumerate(similarities_batch):
-                if similarity > self.similarity_threshold:
-                    above_threshold += 1
-                    post_data = post_data_batch[i]
-                    similarities.append(
-                        {
-                            "id": int(post_ids_batch[i]),
-                            "similarity": float(similarity),
-                            "title": post_data["title"],
-                            "body": post_data["body"][:200],
-                            "url": post_data["url"],
-                        }
-                    )
-
-            logger.info(
-                f"{above_threshold} posts above threshold {self.similarity_threshold}"
-            )
-
-        # Sort by similarity and get top candidates
-        similarities.sort(key=lambda x: x["similarity"], reverse=True)
-        top_candidates = similarities[:8]
-
-        # Update stats
-        self.stats["similarity_checks"] += 1
-        if top_candidates:
-            self.stats["matches_found"] += 1
-
-        processing_time = time.time() - start_time
-        logger.info(f"Similarity search: {processing_time:.3f}s")
-
-        if not top_candidates:
-            return []
-
-        # Use AI for final ranking
-        logger.info("Running AI ranking...")
-        result = await self.ai_rank_candidates_optimized(title, body, top_candidates)
-        logger.info(f"AI returned {len(result)} final matches")
-        return result
-
-    async def ai_rank_candidates_optimized(
-        self, title: str, body: str, candidates: List[Dict]
-    ) -> List[Dict]:
-        """Optimized AI ranking with better prompting"""
-        if not candidates:
-            return []
-
-        # Use only top 5 for AI ranking to save tokens
-        top_5 = candidates[:5]
-
-        prompt = f"""New post: "{title}" - {body[:200]}
-
-Top similar solved posts:
-{json.dumps([{"id": c["id"], "title": c["title"], "body": c["body"][:150]} for c in top_5], indent=1)}
-
-Return JSON array of posts that would help solve the new post:
-[{{"id": 123, "similarity": 0.89, "reason": "Brief why it helps"}}]
-
-Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
-
         try:
-            response = await asyncio.to_thread(
-                self.openai_client.chat.completions.create,
-                model="gpt-5.6-luna",
+            response = await self.openai_client.chat.completions.create(
+                model=RANKING_MODEL,
                 messages=[
                     {
                         "role": "system",
-                        "content": "Expert at matching solved posts to new questions. Always return valid JSON.",
+                        "content": (
+                            "You match previously solved forum posts to a new "
+                            "question. Always return valid JSON."
+                        ),
                     },
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=400,
+                response_format={"type": "json_object"},
+                timeout=RERANK_TIMEOUT,
+            )
+            data = json.loads(response.choices[0].message.content or "{}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Rerank failed: {e!r}")
+            self.stats["rerank_failures"] += 1
+            return None
+
+        matches = data.get("matches") if isinstance(data, dict) else None
+        if not isinstance(matches, list):
+            logger.warning(f"Rerank returned an unexpected shape: {data!r}")
+            self.stats["rerank_failures"] += 1
+            return None
+
+        by_id = {c["id"]: c for c in shortlist}
+        ordered: list[dict] = []
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            candidate = by_id.get(str(match.get("id")))
+            # Keep the real cosine score; the model only decides inclusion.
+            if candidate and candidate not in ordered:
+                ordered.append(
+                    {**candidate, "reason": str(match.get("reason", ""))[:120]}
+                )
+        return ordered
+
+    # -- indexing ----------------------------------------------------------
+
+    def is_thread_solved(self, thread) -> bool:
+        for tag in getattr(thread, "applied_tags", None) or []:
+            if getattr(tag, "id", None) == SOLVED_TAG_ID:
+                return True
+            if getattr(tag, "name", None) == SOLVED_TAG_NAME:
+                return True
+        return False
+
+    async def _thread_text(
+        self, thread: discord.Thread
+    ) -> tuple[str, discord.Message | None]:
+        """Title + opening post, degrading to title-only when unreadable."""
+        starter = None
+        try:
+            starter = await thread.fetch_message(thread.id)
+        except discord.NotFound:
+            try:
+                async for message in thread.history(limit=1, oldest_first=True):
+                    starter = message
+                    break
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"No history access for thread {thread.id}: {e!r}")
+        except discord.Forbidden:
+            logger.warning(f"No permission to read thread {thread.id}")
+        except discord.HTTPException as e:
+            logger.warning(f"Could not fetch starter of thread {thread.id}: {e!r}")
+
+        title = thread.name or "Untitled"
+        body = starter.content if starter else "[Content not accessible]"
+        return f"Title: {title}\nBody: {body}", starter
+
+    async def index_threads(self, threads: list[discord.Thread]) -> int:
+        """Embed and store a batch of solved threads. Returns how many landed."""
+        pending = [t for t in threads if str(t.id) not in self.index.posts]
+        if not pending:
+            return 0
+
+        texts: list[str] = []
+        prepared: list[tuple[discord.Thread, discord.Message | None]] = []
+        for thread in pending:
+            try:
+                text, starter = await self._thread_text(thread)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Could not prepare thread {thread.id}: {e!r}")
+                continue
+            texts.append(text)
+            prepared.append((thread, starter))
+
+        if not texts:
+            return 0
+
+        vectors = await self.embed_texts(texts)
+
+        entries: list[tuple[str, dict, list[float]]] = []
+        for (thread, starter), vector in zip(prepared, vectors):
+            if not vector:
+                continue
+            entries.append(
+                (
+                    str(thread.id),
+                    {
+                        "title": thread.name or "Untitled",
+                        "body": (starter.content if starter else "")[:1000],
+                        "author_id": starter.author.id if starter else None,
+                        "created_at": thread.created_at.isoformat(),
+                        "indexed_at": _now_utc().isoformat(),
+                        "url": thread.jump_url,
+                        "embedding_model": self.index.model,
+                        "content_accessible": starter is not None,
+                    },
+                    vector,
+                )
             )
 
-            result = response.choices[0].message.content.strip()
+        if not entries:
+            return 0
 
-            # Extract JSON
-            if "```json" in result:
-                result = result.split("```json")[1].split("```")[0]
-            elif "```" in result:
-                result = result.split("```")[1].split("```")[0]
+        async with self._write_lock:
+            added = self.index.add_many(entries)
+            if added:
+                await self.index.save()
+        return added
 
-            return json.loads(result)
+    async def add_thread_to_index(self, thread: discord.Thread) -> None:
+        thread_id = str(thread.id)
+        if thread_id in self._processing_threads or thread_id in self.index.posts:
+            return
 
+        self._processing_threads.add(thread_id)
+        try:
+            await self.index_threads([thread])
+        finally:
+            self._processing_threads.discard(thread_id)
+
+    # -- background tasks --------------------------------------------------
+
+    @tasks.loop(minutes=30)
+    async def check_new_solved_posts(self) -> None:
+        forum = self.bot.get_channel(self.forum_channel_id)
+        if not isinstance(forum, discord.ForumChannel):
+            return
+
+        found: dict[str, discord.Thread] = {}
+        cutoff = _now_utc() - timedelta(days=ARCHIVED_MAX_AGE_DAYS)
+
+        def wanted(thread) -> bool:
+            tid = str(thread.id)
+            return (
+                self.is_thread_solved(thread)
+                and tid not in self.index.posts
+                and tid not in self._processing_threads
+                and tid not in found
+            )
+
+        try:
+            for thread in forum.threads:
+                if wanted(thread):
+                    found[str(thread.id)] = thread
+
+            archived = 0
+            async for thread in forum.archived_threads(limit=ARCHIVED_SCAN_LIMIT):
+                if archived >= ARCHIVED_MAX_NEW:
+                    break
+                if thread.created_at < cutoff:
+                    continue
+                if wanted(thread):
+                    found[str(thread.id)] = thread
+                    archived += 1
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.error(f"Error in AI ranking: {e}")
-            # Fallback to top embedding matches
-            return candidates[:3]
+            logger.error(f"Error scanning for solved posts: {e!r}", exc_info=True)
+            return
+
+        if not found:
+            return
+
+        self._processing_threads.update(found)
+        try:
+            added = await self.index_threads(list(found.values()))
+            logger.info(
+                f"Indexed {added} new solved posts (total {len(self.index.posts)})"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Error indexing solved posts: {e!r}", exc_info=True)
+        finally:
+            self._processing_threads.difference_update(found)
+
+    @tasks.loop(hours=24)
+    async def refresh_stale_embeddings(self) -> None:
+        """Re-embed the corpus after a model or dimension change."""
+        if not self.openai_client:
+            return
+
+        needs_model_change = self.index.needs_reindex
+        missing = self.index.missing_vectors()
+        if not needs_model_change and not missing:
+            return
+
+        if needs_model_change:
+            logger.info(
+                f"Re-embedding {len(self.index.posts)} posts: "
+                f"{self.index.model}@{self.index.dimensions} -> "
+                f"{EMBED_MODEL}@{EMBED_DIMENSIONS}"
+            )
+            targets = list(self.index.posts)
+        else:
+            logger.info(f"Backfilling {len(missing)} posts with no embedding")
+            targets = missing
+
+        capped = targets[:REFRESH_BATCH_LIMIT]
+        texts = [
+            f"Title: {self.index.posts[pid].get('title', '')}\n"
+            f"Body: {self.index.posts[pid].get('body', '')}"
+            for pid in capped
+        ]
+        vectors = await self.embed_texts(
+            texts, model=EMBED_MODEL, dimensions=EMBED_DIMENSIONS
+        )
+
+        good = [(pid, vec) for pid, vec in zip(capped, vectors) if vec]
+        if not good:
+            logger.error("Re-embedding produced no usable vectors; index unchanged")
+            return
+
+        async with self._write_lock:
+            if needs_model_change:
+                if len(good) < len(targets):
+                    # A partial swap would leave two models in one matrix.
+                    logger.warning(
+                        f"Only {len(good)}/{len(targets)} posts re-embedded; "
+                        "retrying the rest on the next run"
+                    )
+                    return
+                self.index.replace_all_vectors(
+                    [pid for pid, _ in good],
+                    np.array([vec for _, vec in good], dtype=np.float32),
+                    EMBED_MODEL,
+                    EMBED_DIMENSIONS,
+                )
+            else:
+                self.index.add_many(
+                    [(pid, self.index.posts[pid], vec) for pid, vec in good]
+                )
+            for pid, _ in good:
+                self.index.posts[pid]["embedding_model"] = EMBED_MODEL
+                self.index.posts[pid]["refreshed_at"] = _now_utc().isoformat()
+            await self.index.save()
+
+        logger.info(f"Refreshed {len(good)} embeddings")
+
+    @check_new_solved_posts.before_loop
+    @refresh_stale_embeddings.before_loop
+    async def _wait_for_bot(self) -> None:
+        await self.bot.wait_until_ready()
+        # Stagger startup so a restart doesn't fire every API call at once.
+        await asyncio.sleep(10)
+
+    # -- search ------------------------------------------------------------
+
+    async def find_similar_solved_posts(self, title: str, body: str) -> list[dict]:
+        if not self.index.posts or not self.openai_client:
+            return []
+
+        started = time.perf_counter()
+        query = await self.embed_one(f"Title: {title}\nBody: {body}")
+        if not query:
+            return []
+
+        hits = self.index.search(
+            np.asarray(query, dtype=np.float32), SIMILARITY_THRESHOLD, SHORTLIST_SIZE
+        )
+        self.stats["similarity_checks"] += 1
+
+        logger.info(
+            f"{len(hits)} of {len(self.index.ids)} posts above "
+            f"{SIMILARITY_THRESHOLD} in {time.perf_counter() - started:.3f}s"
+        )
+        if not hits:
+            return []
+
+        candidates = [
+            {
+                "id": pid,
+                "similarity": score,
+                "title": self.index.posts[pid].get("title", "Untitled"),
+                "body": self.index.posts[pid].get("body", "")[:200],
+                "url": self.index.posts[pid].get("url", ""),
+            }
+            for pid, score in hits
+            if pid in self.index.posts
+        ]
+
+        ranked = await self.rerank(title, body, candidates)
+        if ranked is None:
+            # Reranker unavailable - fall back to raw embedding order.
+            ranked = candidates[:MAX_SUGGESTIONS]
+
+        if ranked:
+            self.stats["matches_found"] += 1
+        return ranked[:MAX_SUGGESTIONS]
+
+    # -- events ------------------------------------------------------------
 
     @commands.Cog.listener()
-    async def on_thread_create(self, thread):
-        """Handle new forum posts with optimized processing"""
-        logger.info(f"New thread detected: {thread.name} in channel {thread.parent.id}")
-
+    async def on_thread_create(self, thread: discord.Thread) -> None:
         if (
             not isinstance(thread.parent, discord.ForumChannel)
             or thread.parent.id != self.forum_channel_id
         ):
             return
 
+        logger.info(f"New thread: {thread.name!r} ({thread.id})")
         await asyncio.sleep(2)
 
         try:
-            starter_message = await thread.fetch_message(thread.id)
-
-            if not thread.name and not starter_message.content:
-                logger.error("No title or content to analyze")
+            _, starter = await self._thread_text(thread)
+            title = thread.name or ""
+            body = starter.content if starter else ""
+            if not title and not body:
+                logger.info(f"Thread {thread.id} has no title or content to analyse")
                 return
 
-            logger.info(
-                f"Analyzing post: '{thread.name}' with {len(self.solved_posts)} solved posts"
-            )
-
-            # Find similar solved posts using optimized search
-            similar_posts = await self.find_similar_solved_posts_optimized(
-                thread.name or "Untitled", starter_message.content or ""
-            )
-
-            logger.info(f"Found {len(similar_posts)} similar posts")
-
-            if similar_posts:
-                await self.send_similarity_notification(thread, similar_posts)
-                logger.info("Sent similarity notification")
-            else:
-                logger.info("No similar posts found above threshold")
-
+            similar = await self.find_similar_solved_posts(title, body)
+            if similar:
+                await self.send_similarity_notification(thread, similar)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.error(f"Error processing new thread: {e}")
+            logger.error(f"Error processing thread {thread.id}: {e!r}", exc_info=True)
 
     @commands.Cog.listener()
-    async def on_thread_update(self, before, after):
-        """Detect solved threads with immediate indexing and duplicate prevention"""
+    async def on_thread_update(self, before, after) -> None:
         if (
             not isinstance(after.parent, discord.ForumChannel)
             or after.parent.id != self.forum_channel_id
         ):
             return
 
-        # Check if thread was just marked as solved
-        before_solved = (
-            self.is_thread_solved(before) if hasattr(before, "applied_tags") else False
-        )
-        after_solved = self.is_thread_solved(after)
+        if self.is_thread_solved(before) or not self.is_thread_solved(after):
+            return
 
-        if not before_solved and after_solved:
-            thread_id = str(after.id)
+        thread_id = str(after.id)
+        if thread_id in self.index.posts or thread_id in self._processing_threads:
+            return
 
-            # ADDED: More thorough duplicate checking
-            if (
-                thread_id not in self.solved_posts
-                and thread_id not in self._processing_threads
-            ):
-                await self.add_thread_to_index(after)
-                logger.info(f"Immediately indexed newly solved post: {after.name}")
-            else:
-                logger.info(f"Thread {thread_id} already indexed or being processed")
+        await self.add_thread_to_index(after)
+        logger.info(f"Indexed newly solved post {after.name!r} ({after.id})")
 
-    async def send_similarity_notification(self, thread, similar_posts):
-        """Send optimized notification"""
+    async def send_similarity_notification(
+        self, thread: discord.Thread, similar_posts: list[dict]
+    ) -> None:
         embed = discord.Embed(
             title="🔍 Similar Solved Posts",
             description="Found some similar posts that might help:",
@@ -702,94 +797,68 @@ Only include truly helpful posts (similarity > 0.82). Return [] if none help."""
         )
 
         links = []
-        for similar in similar_posts[:3]:
-            post_data = self.solved_posts.get(str(similar["id"]))
-            if post_data:
-                similarity_percentage = int(similar["similarity"] * 100)
-                title = (
-                    post_data["title"][:50] + "..."
-                    if len(post_data["title"]) > 50
-                    else post_data["title"]
-                )
-                links.append(
-                    f"[{title}](<{post_data['url']}>) ({similarity_percentage}%)"
-                )
+        for post in similar_posts[:MAX_SUGGESTIONS]:
+            if not post.get("url"):
+                continue
+            title = post["title"]
+            if len(title) > 50:
+                title = title[:50] + "..."
+            # Real cosine similarity, not a number the LLM made up.
+            links.append(f"[{title}](<{post['url']}>) ({post['similarity']:.0%})")
 
-        if links:
-            embed.add_field(
-                name="📋 Check these out:", value="\n".join(links), inline=False
-            )
+        if not links:
+            return
 
-            # Add performance footer for debugging
-            if len(self.solved_posts) > 50:
-                embed.set_footer(text=f"Searched {len(self.solved_posts)} solved posts")
+        embed.add_field(
+            name="📋 Check these out:", value="\n".join(links), inline=False
+        )
+        if len(self.index.posts) > 50:
+            embed.set_footer(text=f"Searched {len(self.index.posts)} solved posts")
 
-        await asyncio.sleep(50)
-        await thread.send(embed=embed)
+        await asyncio.sleep(NOTIFY_DELAY)
+        try:
+            await thread.send(embed=embed)
+        except discord.HTTPException as e:
+            logger.warning(f"Could not post suggestions in thread {thread.id}: {e!r}")
 
-    def get_stats(self) -> Dict:
-        """Get performance statistics"""
+    # -- maintenance -------------------------------------------------------
+
+    def get_stats(self) -> dict:
         return {
             **self.stats,
-            "total_solved_posts": len(self.solved_posts),
-            "cached_embeddings": len(self.embedding_cache),
-            "cache_hit_rate": self.stats["cache_hits"]
-            / max(1, self.stats["similarity_checks"]),
-            "currently_processing": len(self._processing_threads),  # ADDED
+            "total_solved_posts": len(self.index.posts),
+            "embedded_posts": len(self.index.ids),
+            "embedding_model": f"{self.index.model}@{self.index.dimensions}",
+            "currently_processing": len(self._processing_threads),
         }
 
-    # ADDED: Utility method to clean existing duplicates
-    async def clean_duplicates(self):
-        """Manually clean duplicates from the index"""
-        original_count = len(self.solved_posts)
-        self._remove_duplicates()
-        await self.save_solved_posts()
-        cleaned_count = len(self.solved_posts)
-
-        if original_count != cleaned_count:
-            logger.info(f"Cleaned {original_count - cleaned_count} duplicate entries")
-            return original_count - cleaned_count
-        return 0
-
-    # ADDED: Method to clean up inaccessible threads
-    async def cleanup_inaccessible_threads(self):
-        """Remove threads from index that are no longer accessible"""
-        forum_channel = self.bot.get_channel(self.forum_channel_id)
-        if not forum_channel:
+    async def cleanup_inaccessible_threads(self) -> int:
+        """Drop index entries whose threads no longer exist."""
+        forum = self.bot.get_channel(self.forum_channel_id)
+        if not isinstance(forum, discord.ForumChannel):
             return 0
 
-        inaccessible_threads = []
+        # One pass over the archive, not one pass per indexed post.
+        live_ids = {str(t.id) for t in forum.threads}
+        try:
+            async for thread in forum.archived_threads(limit=None):
+                live_ids.add(str(thread.id))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Could not enumerate archived threads: {e!r}")
+            return 0
 
-        for thread_id in list(self.solved_posts.keys()):
-            try:
-                # Try to get the thread
-                thread = forum_channel.get_thread(int(thread_id))
-                if not thread:
-                    # Try archived threads
-                    found = False
-                    async for archived_thread in forum_channel.archived_threads(
-                        limit=None
-                    ):
-                        if str(archived_thread.id) == thread_id:
-                            found = True
-                            break
+        gone = [pid for pid in self.index.posts if pid not in live_ids]
+        if not gone:
+            return 0
 
-                    if not found:
-                        inaccessible_threads.append(thread_id)
-            except Exception:
-                inaccessible_threads.append(thread_id)
+        async with self._write_lock:
+            removed = self.index.remove_many(gone)
+            await self.index.save()
 
-        if inaccessible_threads:
-            for thread_id in inaccessible_threads:
-                del self.solved_posts[thread_id]
-                self.embedding_cache.pop(thread_id, None)
-
-            await self.save_solved_posts()
-            logger.info(
-                f"Cleaned up {len(inaccessible_threads)} inaccessible threads from index"
-            )
-
-        return len(inaccessible_threads)
+        logger.info(f"Removed {removed} inaccessible threads from the index")
+        return removed
 
 
 async def setup(bot):
