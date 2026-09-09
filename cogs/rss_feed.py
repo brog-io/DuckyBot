@@ -93,7 +93,7 @@ FEEDS = {
 }
 
 STATE_FILE = "ente_rss_state.json"
-RECENT_POSTS_LIMIT = 10
+RECENT_POSTS_LIMIT = 100
 MAX_AGE_HOURS = 72
 FEED_TIMEOUT = 60
 
@@ -137,7 +137,11 @@ def create_clean_state():
 
     for feed_key, feed_cfg in FEEDS.items():
         url = feed_cfg["url"]
-        state["feeds"][url] = {"name": feed_key, "last_check": start_time}
+        state["feeds"][url] = {
+            "name": feed_key,
+            "last_check": start_time,
+            "initialized": False,
+        }
         state["recent_posts"][url] = []
 
     return state
@@ -185,6 +189,9 @@ def load_state():
                     logger.info(
                         f"Migrated {len(state['recent_posts'][url])} recent posts for {feed_key}"
                     )
+                    state["feeds"][url]["initialized"] = bool(
+                        state["recent_posts"][url]
+                    )
 
             # Clean up old state file
             backup_file = f"{STATE_FILE}.old_backup"
@@ -208,9 +215,15 @@ def load_state():
                         "last_check": (
                             datetime.now(timezone.utc) - timedelta(hours=24)
                         ).isoformat(),
+                        "initialized": False,
                     }
                 if url not in state["recent_posts"]:
                     state["recent_posts"][url] = []
+                # Feeds we already have post ids for have been running
+                # before this flag existed - do not re-seed them.
+                state["feeds"][url].setdefault(
+                    "initialized", bool(state["recent_posts"][url])
+                )
 
             return state
 
@@ -405,48 +418,47 @@ class RSSFeedCog(commands.Cog):
                         logger.debug(f"No entries in {feed_key} feed")
                     continue
 
-                # Get last check time
-                feed_info = self.state["feeds"].get(url, {})
-                last_check_str = feed_info.get("last_check")
+                feed_info = self.state["feeds"].setdefault(
+                    url, {"name": feed_key, "initialized": False}
+                )
 
-                try:
-                    last_check = dateparser.parse(last_check_str)
-                    if last_check.tzinfo is None:
-                        last_check = last_check.replace(tzinfo=timezone.utc)
-                except Exception:
-                    last_check = datetime.now(timezone.utc) - timedelta(hours=1)
-                    logger.warning(
-                        f"{feed_key}: Invalid last check time, using 1 hour ago"
+                # First time we see a feed: remember what is already
+                # published instead of dumping a backlog into Discord.
+                if not feed_info.get("initialized"):
+                    seeded = 0
+                    for entry in feed_data.entries:
+                        post_id = get_post_identifier(entry)
+                        if post_id:
+                            add_recent_post(self.state, url, post_id)
+                            seeded += 1
+                    feed_info["initialized"] = True
+                    feed_info["last_check"] = datetime.now(timezone.utc).isoformat()
+                    changed = True
+                    logger.info(
+                        f"{feed_key}: seeded {seeded} existing posts, nothing posted"
                     )
+                    continue
 
-                # Process entries
+                # Process entries.
+                #
+                # Entry timestamps are deliberately NOT used as a watermark:
+                # feeds like ente.com stamp every post of a given day with the
+                # same midnight date, so a "newer than last check" comparison
+                # permanently hides every post after the first one that day.
+                # What is new is decided by post id alone, with the age cutoff
+                # as the backstop.
                 new_entries = []
-                latest_date = None
 
                 for i, entry in enumerate(feed_data.entries):
-                    entry_date = get_entry_date(entry)
                     post_id = get_post_identifier(entry)
 
-                    if not entry_date or not post_id:
-                        logger.debug(
-                            f"{feed_key} entry {i}: Missing date or ID, skipping"
-                        )
+                    if not post_id:
+                        logger.debug(f"{feed_key} entry {i}: Missing ID, skipping")
                         continue
-
-                    # Track latest date
-                    if latest_date is None or entry_date > latest_date:
-                        latest_date = entry_date
 
                     # Skip if already posted
                     if is_post_recent(self.state, url, post_id):
                         logger.debug(f"{feed_key} entry {i}: Already posted")
-                        continue
-
-                    # Skip if older than last check
-                    if entry_date.tzinfo is None:
-                        entry_date = entry_date.replace(tzinfo=timezone.utc)
-
-                    if entry_date <= last_check:
                         continue
 
                     # Skip if too old
@@ -485,15 +497,8 @@ class RSSFeedCog(commands.Cog):
                             changed = True
                             await asyncio.sleep(1)  # Rate limit protection
 
-                # Update last check time
-                if latest_date:
-                    new_check_time = latest_date.isoformat()
-                    if new_check_time != self.state["feeds"][url]["last_check"]:
-                        self.state["feeds"][url]["last_check"] = new_check_time
-                        changed = True
-                        logger.debug(
-                            f"{feed_key}: Updated last check to {new_check_time}"
-                        )
+                # Informational only - no longer used to decide what is new.
+                feed_info["last_check"] = datetime.now(timezone.utc).isoformat()
 
             except Exception as e:
                 logger.error(f"Error processing {feed_key}: {e}")
