@@ -4,6 +4,7 @@ from discord import app_commands
 import logging
 from discord.ui import Button, View
 import asyncio
+from cachetools import TTLCache
 from datetime import datetime, timedelta, UTC
 from dotenv import load_dotenv
 import os
@@ -46,7 +47,8 @@ class StarCounter(commands.Cog):
         self.star_count_cache = None
         self.last_cache_update = None
         self.cache_duration = timedelta(minutes=5)
-        self.button_cooldowns = {}  # Add cooldown tracking
+        # user id -> last refresh; entries drop out once the 30s cooldown ends
+        self.button_cooldowns: TTLCache = TTLCache(maxsize=10_000, ttl=30)
         self.monitor_stars.start()
 
     def cog_unload(self):

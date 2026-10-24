@@ -19,11 +19,10 @@ class Misc(commands.Cog):
     async def status(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as session:
-                async with session.get("https://api.ente.com/ping") as resp:
-                    data = await resp.json()
+            async with self.bot.http_session.get(
+                "https://api.ente.com/ping", timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                data = await resp.json()
             if resp.status == 200 and data.get("message") == "pong":
                 embed = discord.Embed(
                     title="Ente Status",
@@ -79,20 +78,20 @@ class Misc(commands.Cog):
 
     @app_commands.command(name="duck", description="Get a random duck image")
     async def duck(self, interaction: discord.Interaction):
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://random-d.uk/api/v2/quack") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    image_url = data.get("url")
-                    embed = discord.Embed(
-                        title="Quack!", color=discord.Color(0xFFCD3F)
-                    ).set_image(url=image_url)
-                    await interaction.response.send_message(embed=embed)
-                else:
-                    await interaction.response.send_message(
-                        "Couldn't fetch a duck image right now. Try again later.",
-                        ephemeral=True,
-                    )
+        session = self.bot.http_session
+        async with session.get("https://random-d.uk/api/v2/quack") as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                image_url = data.get("url")
+                embed = discord.Embed(
+                    title="Quack!", color=discord.Color(0xFFCD3F)
+                ).set_image(url=image_url)
+                await interaction.response.send_message(embed=embed)
+            else:
+                await interaction.response.send_message(
+                    "Couldn't fetch a duck image right now. Try again later.",
+                    ephemeral=True,
+                )
 
     @app_commands.command(name="tip", description="Get a random helpful tip from Ente.")
     async def tip(self, interaction: discord.Interaction):
@@ -100,27 +99,27 @@ class Misc(commands.Cog):
 
         payload = {"key": API_KEY}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.poggers.win/api/ente/tip", json=payload
-            ) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send(
-                        "Failed to fetch a tip.", ephemeral=True
-                    )
-                    return
+        session = self.bot.http_session
+        async with session.post(
+            "https://api.poggers.win/api/ente/tip", json=payload
+        ) as resp:
+            if resp.status != 200:
+                await interaction.followup.send(
+                    "Failed to fetch a tip.", ephemeral=True
+                )
+                return
 
-                data = await resp.json()
-                tip = data.get("tip", "No tip found.")
-                url = data.get("documentationUrl")
+            data = await resp.json()
+            tip = data.get("tip", "No tip found.")
+            url = data.get("documentationUrl")
 
-                if url:
-                    button = discord.ui.Button(label="View Documentation", url=url)
-                    view = discord.ui.View()
-                    view.add_item(button)
-                    await interaction.followup.send(tip, ephemeral=True, view=view)
-                else:
-                    await interaction.followup.send(tip, ephemeral=True)
+            if url:
+                button = discord.ui.Button(label="View Documentation", url=url)
+                view = discord.ui.View()
+                view.add_item(button)
+                await interaction.followup.send(tip, ephemeral=True, view=view)
+            else:
+                await interaction.followup.send(tip, ephemeral=True)
 
     @app_commands.command(name="help", description="List all available commands.")
     async def help(self, interaction: discord.Interaction):

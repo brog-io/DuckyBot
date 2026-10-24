@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import aiohttp
 import json
+from cachetools import TTLCache
 import os
 import logging
 import asyncio
@@ -70,8 +71,9 @@ SOLVED_TAG_IDS = {
 class SelfHelp(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.processed_threads = set()
-        self.hint_sent_threads = set()
+        # thread id -> True. Only needs to dedupe the two triggers fired when a
+        # thread is created, so entries expire instead of piling up forever.
+        self.processed_threads: TTLCache = TTLCache(maxsize=2048, ttl=24 * 3600)
         self.pending_closures = {}
         self.solved_command_id = None
         self.unsolve_command_id = None
@@ -121,21 +123,21 @@ class SelfHelp(commands.Cog):
         )
         payload = {"solutionId": solution_message_id}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "x-api-key": AO_API_KEY,
-                    "User-Agent": "Mozilla/5.0",
-                },
-            ) as resp:
-                text = await resp.text()
-                if resp.status >= 300:
-                    logger.error(f"AO update failed {resp.status}: {text}")
-                else:
-                    logger.info("AO update ok")
+        session = self.bot.http_session
+        async with session.post(
+            url,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": AO_API_KEY,
+                "User-Agent": "Mozilla/5.0",
+            },
+        ) as resp:
+            text = await resp.text()
+            if resp.status >= 300:
+                logger.error(f"AO update failed {resp.status}: {text}")
+            else:
+                logger.info("AO update ok")
 
     ########################################################################
     # AI doc search and reply generator
@@ -152,20 +154,20 @@ class SelfHelp(commands.Cog):
         prompt = f"Title: {title}\nTags: {tags_text}\nMessage: {body.strip() or 'No content provided.'}"
 
         timeout = aiohttp.ClientTimeout(total=QUERY_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                "https://api.poggers.win/api/ente/docs-search",
-                json={"query": prompt, "key": API_KEY},
-            ) as resp:
-                raw = await resp.text()
-                if resp.status != 200:
-                    raise RuntimeError(f"docs-search HTTP {resp.status}: {raw[:200]}")
-                try:
-                    data = json.loads(raw)
-                except ValueError as e:
-                    raise RuntimeError(
-                        f"docs-search returned non-JSON body: {raw[:200]}"
-                    ) from e
+        async with self.bot.http_session.post(
+            "https://api.poggers.win/api/ente/docs-search",
+            json={"query": prompt, "key": API_KEY},
+            timeout=timeout,
+        ) as resp:
+            raw = await resp.text()
+            if resp.status != 200:
+                raise RuntimeError(f"docs-search HTTP {resp.status}: {raw[:200]}")
+            try:
+                data = json.loads(raw)
+            except ValueError as e:
+                raise RuntimeError(
+                    f"docs-search returned non-JSON body: {raw[:200]}"
+                ) from e
 
         if not isinstance(data, dict) or not data.get("success"):
             raise RuntimeError("docs-search returned success=false")
@@ -244,13 +246,13 @@ class SelfHelp(commands.Cog):
         if thread.id in self.processed_threads:
             return
 
-        self.processed_threads.add(thread.id)
+        self.processed_threads[thread.id] = True
 
         try:
             analyzing = await thread.send(ANALYZING_TEXT)
         except Exception as e:
             logger.error(f"Could not post placeholder in thread {thread.id}: {e!r}")
-            self.processed_threads.discard(thread.id)
+            self.processed_threads.pop(thread.id, None)
             return
 
         resolved = False
@@ -276,7 +278,7 @@ class SelfHelp(commands.Cog):
                 await self.safe_edit(analyzing, FAILURE_TEXT)
                 resolved = True
                 # Let a later trigger try this thread again.
-                self.processed_threads.discard(thread.id)
+                self.processed_threads.pop(thread.id, None)
                 return
 
             solved_hint = (
@@ -305,13 +307,13 @@ class SelfHelp(commands.Cog):
         except asyncio.CancelledError:
             # Bot is restarting or the task was cancelled; the finally block
             # still gets a chance to clear the placeholder.
-            self.processed_threads.discard(thread.id)
+            self.processed_threads.pop(thread.id, None)
             raise
         except Exception as e:
             logger.error(
                 f"Unhandled error answering thread {thread.id}: {e!r}", exc_info=True
             )
-            self.processed_threads.discard(thread.id)
+            self.processed_threads.pop(thread.id, None)
         finally:
             # Whatever happened above, the placeholder must not be left hanging.
             if not resolved:

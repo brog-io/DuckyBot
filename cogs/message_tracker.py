@@ -38,6 +38,7 @@ class MessageTracker(commands.Cog):
                 db=MYSQL_DATABASE,
                 autocommit=True,
                 charset="utf8mb4",
+                maxsize=5,
             )
         return self.db_pool
 
@@ -232,53 +233,48 @@ class MessageTracker(commands.Cog):
     ):
         user = user or interaction.user
 
-        # Helper for ranking
+        # Helper for ranking. MySQL computes the rank directly instead of the
+        # bot downloading every user's message count and scanning the list.
         async def get_rank_and_count(mode: str):
             now = datetime.now(timezone.utc)
+            if mode == "forever":
+                since = None
+            elif mode == "monthly":
+                since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            elif mode == "weekly":
+                since = (now - timedelta(days=now.weekday())).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+            else:
+                return None, 0
+
+            where = ""
+            params: tuple = ()
+            if since is not None:
+                where = "WHERE timestamp >= %s"
+                params = (since.strftime("%Y-%m-%d %H:%M:%S"),)
+
             pool = await self._get_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cursor:
-                    if mode == "forever":
-                        query = """
-                            SELECT user_id, COUNT(*) as count
-                            FROM messages
-                            GROUP BY user_id
-                            ORDER BY count DESC
-                        """
-                        await cursor.execute(query)
-                    elif mode == "monthly":
-                        start_month = now.replace(
-                            day=1, hour=0, minute=0, second=0, microsecond=0
-                        ).strftime("%Y-%m-%d %H:%M:%S")
-                        query = """
-                            SELECT user_id, COUNT(*) as count
-                            FROM messages
-                            WHERE timestamp >= %s
-                            GROUP BY user_id
-                            ORDER BY count DESC
-                        """
-                        await cursor.execute(query, (start_month,))
-                    elif mode == "weekly":
-                        start_week = now - timedelta(days=now.weekday())
-                        start_week = start_week.replace(
-                            hour=0, minute=0, second=0, microsecond=0
-                        ).strftime("%Y-%m-%d %H:%M:%S")
-                        query = """
-                            SELECT user_id, COUNT(*) as count
-                            FROM messages
-                            WHERE timestamp >= %s
-                            GROUP BY user_id
-                            ORDER BY count DESC
-                        """
-                        await cursor.execute(query, (start_week,))
-                    else:
+                    user_filter = "AND user_id = %s" if where else "WHERE user_id = %s"
+                    await cursor.execute(
+                        f"SELECT COUNT(*) FROM messages {where} {user_filter}",
+                        params + (user.id,),
+                    )
+                    (count,) = await cursor.fetchone()
+                    if not count:
                         return None, 0
 
-                    leaderboard = await cursor.fetchall()
-                    for i, (user_id, count) in enumerate(leaderboard, start=1):
-                        if user_id == user.id:
-                            return i, count
-                    return None, 0
+                    await cursor.execute(
+                        "SELECT COUNT(*) FROM ("
+                        f" SELECT user_id FROM messages {where}"
+                        " GROUP BY user_id HAVING COUNT(*) > %s"
+                        ") AS ahead",
+                        params + (count,),
+                    )
+                    (ahead,) = await cursor.fetchone()
+                    return ahead + 1, count
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         embed = discord.Embed(title=f"📊 Rank for {user.display_name}", color=0xFFCD3F)

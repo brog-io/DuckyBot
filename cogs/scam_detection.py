@@ -5,11 +5,13 @@ from openai import AsyncOpenAI
 from cachetools import TTLCache
 from datetime import datetime, timezone, timedelta
 import re
-import httpx
+import aiohttp
+import hashlib
 import json
 import os
 import logging
 from dotenv import load_dotenv
+from utils.openai_client import get_openai_client
 
 load_dotenv()
 
@@ -23,7 +25,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set in .env")
 
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client: AsyncOpenAI = get_openai_client()
 
 config_file = "config.json"
 with open(config_file, "r", encoding="utf-8") as f:
@@ -72,28 +74,41 @@ def get_domain(url: str) -> str:
     return domain
 
 
-async def fetch_txt_list(url: str) -> set[str]:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url, timeout=15)
+def domain_in_list(domain: str, blocklist: frozenset[str]) -> bool:
+    """True if the domain or any parent domain is in the list.
+
+    Same result as checking `domain == entry or domain.endswith("." + entry)`
+    for every entry, but a handful of set lookups instead of a full scan.
+    """
+    labels = domain.split(".")
+    return any(".".join(labels[i:]) in blocklist for i in range(len(labels)))
+
+
+async def fetch_txt_list(session: aiohttp.ClientSession, url: str) -> frozenset[str]:
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
         r.raise_for_status()
-        return {
-            line.strip().lower()
-            for line in r.text.splitlines()
-            if line and not line.startswith("#")
-        }
+        text = await r.text()
+    return frozenset(
+        line.strip().lower()
+        for line in text.splitlines()
+        if line and not line.startswith("#")
+    )
 
 
-async def poggers_unshorten(url: str) -> str:
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
+async def poggers_unshorten(session: aiohttp.ClientSession, url: str) -> str:
+    try:
+        async with session.post(
             "https://api.poggers.win/api/ente/unshorten-url",
             json={"url": url, "key": POGGERS_API_KEY},
-            timeout=12,
-        )
-        data = r.json()
-        if data.get("success") and data.get("completeUrl"):
-            return data["completeUrl"]
+            timeout=aiohttp.ClientTimeout(total=12),
+        ) as r:
+            data = await r.json(content_type=None)
+    except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+        logger.warning(f"Unshorten failed for {url}: {e!r}")
         return url
+    if isinstance(data, dict) and data.get("success") and data.get("completeUrl"):
+        return data["completeUrl"]
+    return url
 
 
 # =========================
@@ -211,8 +226,10 @@ class ModerationButtons(View):
 class ScamDetection(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.scam_domains: set[str] = set()
-        self.shortener_domains: set[str] = set()
+        self.scam_domains: frozenset[str] = frozenset()
+        self.shortener_domains: frozenset[str] = frozenset()
+        # Keyed by a hash of the payload, not the payload itself, so the
+        # cache doesn't hold up to 1024 full message bodies.
         self.score_cache = TTLCache(maxsize=1024, ttl=300)
 
         self.cooldowns = commands.CooldownMapping.from_cooldown(
@@ -226,8 +243,16 @@ class ScamDetection(commands.Cog):
 
     @tasks.loop(hours=1)
     async def update_lists(self):
-        self.scam_domains = await fetch_txt_list(SCAM_LIST_URL)
-        self.shortener_domains = await fetch_txt_list(SHORTENER_LIST_URL)
+        session = self.bot.http_session
+        try:
+            scam_domains = await fetch_txt_list(session, SCAM_LIST_URL)
+            shortener_domains = await fetch_txt_list(session, SHORTENER_LIST_URL)
+        except (aiohttp.ClientError, TimeoutError) as e:
+            # Keep the previous lists rather than running with none.
+            logger.error(f"[ScamDetection] Could not refresh lists: {e!r}")
+            return
+        self.scam_domains = scam_domains
+        self.shortener_domains = shortener_domains
         logger.info(
             f"[ScamDetection] Loaded {len(self.scam_domains)} scam domains and "
             f"{len(self.shortener_domains)} shorteners."
@@ -252,21 +277,15 @@ class ScamDetection(commands.Cog):
 
             # If the link is a shortener, attempt to unshorten and then check the final domain
             if domain in self.shortener_domains and domain not in SHORTENER_WHITELIST:
-                final_url = await poggers_unshorten(url)
+                final_url = await poggers_unshorten(self.bot.http_session, url)
                 final_domain = get_domain(final_url)
 
-                if any(
-                    final_domain == scam or final_domain.endswith("." + scam)
-                    for scam in self.scam_domains
-                ):
+                if domain_in_list(final_domain, self.scam_domains):
                     await self._handle_scam(message, content, 100)
                     return
 
             # Direct domain check
-            if any(
-                domain == scam or domain.endswith("." + scam)
-                for scam in self.scam_domains
-            ):
+            if domain_in_list(domain, self.scam_domains):
                 await self._handle_scam(message, content, 100)
                 return
 
@@ -303,7 +322,9 @@ class ScamDetection(commands.Cog):
             ),
         }
 
-        cache_key = json.dumps(payload, sort_keys=True)
+        cache_key = hashlib.blake2b(
+            json.dumps(payload, sort_keys=True).encode(), digest_size=16
+        ).digest()
         if cache_key in self.score_cache:
             risk = self.score_cache[cache_key]
         else:

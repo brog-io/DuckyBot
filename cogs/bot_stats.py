@@ -1,30 +1,14 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import time
 from discord import app_commands
 import aiohttp
 import logging
 import os
-import asyncio
 
 logger = logging.getLogger(__name__)
 
 PING_SECRET = os.getenv("PING_SECRET")
-
-
-async def ping_worker():
-    """Continuously pings an external endpoint to signal that the bot is alive."""
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://brog.io/ping",
-                    headers={"x-auth-key": PING_SECRET},
-                ) as resp:
-                    await resp.text()
-        except Exception as e:
-            print(f"Ping failed: {e}")
-        await asyncio.sleep(60)
 
 
 class Ping(commands.Cog):
@@ -32,6 +16,27 @@ class Ping(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self.heartbeat.start()
+
+    def cog_unload(self):
+        self.heartbeat.cancel()
+
+    @tasks.loop(seconds=60)
+    async def heartbeat(self):
+        """Ping an external endpoint to signal that the bot is alive.
+
+        Runs as a cog task on the bot's shared HTTP session, so it no longer
+        opens a fresh session every minute or survives a bot restart.
+        """
+        try:
+            async with self.bot.http_session.post(
+                "https://brog.io/ping",
+                headers={"x-auth-key": PING_SECRET},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                await resp.read()
+        except Exception as e:
+            logger.warning(f"Ping failed: {e}")
 
     @app_commands.command(
         name="ping", description="Check the bot's latency and response time."
@@ -76,4 +81,3 @@ class Ping(commands.Cog):
 async def setup(bot):
     """Setup function for adding the cog to the bot."""
     await bot.add_cog(Ping(bot))
-    bot.loop.create_task(ping_worker())

@@ -51,8 +51,22 @@ class RateLimiter:
         last_time = self.last_update.get(message_id, datetime.min)
         if current_time - last_time >= timedelta(seconds=self.rate_limit_seconds):
             self.last_update[message_id] = current_time
+            self._prune(current_time)
             return True
         return False
+
+    def _prune(self, now):
+        """Forget entries that can no longer block anything.
+
+        Without this both dicts gain an entry for every message ever starred.
+        """
+        if len(self.last_update) > 256:
+            window = timedelta(seconds=self.rate_limit_seconds)
+            self.last_update = {
+                k: t for k, t in self.last_update.items() if now - t < window
+            }
+        if self.retry_after:
+            self.retry_after = {k: t for k, t in self.retry_after.items() if t > now}
 
     def set_retry_after(self, message_id, seconds):
         """Set a specific retry time based on Discord's rate limit response"""
@@ -81,7 +95,9 @@ class Starboard(commands.Cog):
         self.starred_messages = load_starred_messages()
         self.updating = set()
         self.rate_limiter = RateLimiter(rate_limit_seconds=5)
+        # Message ids with a delayed re-check scheduled (see _retry_later).
         self.pending_updates = set()
+        self._retry_tasks = set()
         self.save_lock = asyncio.Lock()
 
     async def update_starboard(self, message):
@@ -91,7 +107,14 @@ class Starboard(commands.Cog):
             return
 
         if not self.rate_limiter.can_update(message_id_str):
-            self.pending_updates.add(message_id_str)
+            # Re-check once the window has passed so the final star count
+            # isn't lost. Previously ids were added here and never read,
+            # so the set grew forever and the update was simply dropped.
+            if message_id_str not in self.pending_updates:
+                self.pending_updates.add(message_id_str)
+                task = asyncio.create_task(self._retry_later(message))
+                self._retry_tasks.add(task)
+                task.add_done_callback(self._retry_tasks.discard)
             return
 
         self.updating.add(message_id_str)
@@ -164,6 +187,20 @@ class Starboard(commands.Cog):
                         pass
         finally:
             self.updating.remove(message_id_str)
+
+    async def _retry_later(self, message):
+        try:
+            await asyncio.sleep(self.rate_limiter.rate_limit_seconds)
+        finally:
+            self.pending_updates.discard(str(message.id))
+        try:
+            await self.update_starboard(message)
+        except discord.HTTPException:
+            pass
+
+    def cog_unload(self):
+        for task in self._retry_tasks:
+            task.cancel()
 
     def create_embed(self, message):
         embed = discord.Embed(
@@ -250,9 +287,11 @@ class Starboard(commands.Cog):
             pass
 
     @commands.Cog.listener()
-    async def on_message_delete(self, message):
-        if str(message.id) in self.starred_messages:
-            await self.cleanup_missing_message(str(message.id))
+    async def on_raw_message_delete(self, payload):
+        # Raw event so this works for any message, not just ones that happen
+        # to still be in discord.py's message cache.
+        if str(payload.message_id) in self.starred_messages:
+            await self.cleanup_missing_message(str(payload.message_id))
 
 
 async def setup(bot):

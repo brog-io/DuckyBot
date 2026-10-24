@@ -18,16 +18,16 @@ class MemberManager(commands.Cog):
             return
 
         if self.flag_pattern.search(str(payload.emoji)):
+            # Remove straight from the IDs in the event: no message fetch and
+            # no dependency on the user being in the member/user cache.
             try:
-                channel = self.bot.get_channel(payload.channel_id)
-                message = await channel.fetch_message(payload.message_id)
-                user = self.bot.get_user(payload.user_id)
-
-                for reaction in message.reactions:
-                    if str(reaction.emoji) == str(payload.emoji):
-                        await reaction.remove(user)
-                        break
-            except (discord.Forbidden, discord.NotFound, AttributeError):
+                message = self.bot.get_partial_messageable(
+                    payload.channel_id
+                ).get_partial_message(payload.message_id)
+                await message.remove_reaction(
+                    payload.emoji, discord.Object(id=payload.user_id)
+                )
+            except discord.HTTPException:
                 pass
 
     @commands.Cog.listener()

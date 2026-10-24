@@ -9,7 +9,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from cachetools import TTLCache
+from utils.openai_client import get_openai_client
 
 load_dotenv()
 API_KEY = os.getenv("POGGERS_API_KEY")
@@ -17,7 +18,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 logger = logging.getLogger(__name__)
 
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+openai_client = get_openai_client()
 
 EXAMPLE_QUERIES = [
     "Why are my authenticator codes different?",
@@ -75,9 +76,12 @@ class DocSearch(commands.Cog):
             950275266045960254,
         ]
 
-        # Cooldown: user_id -> timestamp of last trigger
-        self.user_cooldowns: dict[int, float] = {}
-        self.COOLDOWN_SECONDS = 30 * 60  # 15 minutes
+        # Cooldown: user_id -> timestamp of last trigger. Entries expire on
+        # their own, so this no longer grows with every user ever answered.
+        self.COOLDOWN_SECONDS = 30 * 60  # 30 minutes
+        self.user_cooldowns: TTLCache = TTLCache(
+            maxsize=10_000, ttl=self.COOLDOWN_SECONDS
+        )
 
         # Channel specific auto replies
         self.CHANNEL_AUTO_REPLIES: dict[int, dict[str, object]] = {}
@@ -132,8 +136,7 @@ class DocSearch(commands.Cog):
 
     def is_on_cooldown(self, user_id: int) -> bool:
         """Check if a user is still within their cooldown window."""
-        last_time = self.user_cooldowns.get(user_id, 0)
-        return (time.time() - last_time) < self.COOLDOWN_SECONDS
+        return user_id in self.user_cooldowns
 
     def update_cooldown(self, user_id: int) -> None:
         """Update the cooldown timestamp for a user."""
@@ -240,28 +243,26 @@ class DocSearch(commands.Cog):
 
         payload = {"query": query, "key": API_KEY}
 
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(
-                    "https://api.poggers.win/api/ente/docs-search",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status != 200:
-                        await interaction.followup.send(
-                            f"API error: {resp.status}",
-                            ephemeral=True,
-                        )
-                        return
-                    data = await resp.json()
-            except aiohttp.ClientError as e:
-                await interaction.followup.send(f"Network error: {e}", ephemeral=True)
-                return
-            except Exception as e:
-                await interaction.followup.send(
-                    f"Unexpected error: {e}", ephemeral=True
-                )
-                return
+        session = self.bot.http_session
+        try:
+            async with session.post(
+                "https://api.poggers.win/api/ente/docs-search",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send(
+                        f"API error: {resp.status}",
+                        ephemeral=True,
+                    )
+                    return
+                data = await resp.json()
+        except aiohttp.ClientError as e:
+            await interaction.followup.send(f"Network error: {e}", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.followup.send(f"Unexpected error: {e}", ephemeral=True)
+            return
 
         if data.get("success"):
             answer = data.get("answer", "No answer returned.")

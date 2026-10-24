@@ -1,12 +1,11 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Tuple
-import os
 import io
 
-import openai
+from utils.openai_client import get_openai_client
 
 # ---------- Constants for Discord limits ----------
 EMBED_DESC_MAX = 4096
@@ -48,8 +47,9 @@ class Summarizer(commands.Cog):
             1439920913096380537,
         ]
 
-        # Initialize OpenAI client
-        self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Shared async client: the old sync client blocked the whole bot
+        # while a summary was generated, and was a second connection pool.
+        self.openai_client = get_openai_client()
 
     # ---------- Utility: safe chunking helpers ----------
 
@@ -127,7 +127,7 @@ class Summarizer(commands.Cog):
             description=desc_chunks[0] if desc_chunks else "",
             color=color,
             timestamp=timestamp_dt,
-            url=base_url if base_url else discord.Embed.Empty,
+            url=base_url or None,
         )
         # Add header fields safely, these may themselves need chunking
         for fname, fvalue in header_fields.items():
@@ -154,7 +154,7 @@ class Summarizer(commands.Cog):
                 description=chunk,
                 color=color,
                 timestamp=timestamp_dt,
-                url=base_url if base_url else discord.Embed.Empty,
+                url=base_url or None,
             )
             embeds.append(emb)
 
@@ -162,22 +162,35 @@ class Summarizer(commands.Cog):
 
     # ---------- Message collection and formatting ----------
 
-    async def fetch_messages_from_main_channels(
+    async def collect_conversation_text(
         self, hours: int
-    ) -> Tuple[Dict[str, List[discord.Message]], Optional[discord.Guild]]:
-        """Fetch messages from the configured main-server channels across guilds.
+    ) -> Tuple[str, Dict[str, str], Dict[str, int], Optional[discord.Guild]]:
+        """Fetch messages from the configured main-server channels and format them.
 
-        This does not use interaction.guild. It resolves channels globally and
-        checks read permissions in each channel's own guild.
+        Messages are turned into compact text lines as they stream in, so only
+        the text is kept rather than every full Message object. Once the input
+        cap is reached the remaining messages are only counted.
 
         Returns:
-            messages_by_channel: map from channel.name to chronological list of user messages
-            source_guild: the first resolved guild that matches our channels, used for display
+            formatted_text: readable text block for summarization
+            channel_links: channel name -> URL of its first message
+            channel_counts: channel name -> number of user messages
+            source_guild: the first resolved guild that matches our channels
         """
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
-        messages_by_channel: Dict[str, List[discord.Message]] = {}
-
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        parts: List[str] = []
+        size = 0
+        full = False
+        channel_links: Dict[str, str] = {}
+        channel_counts: Dict[str, int] = {}
         source_guild: Optional[discord.Guild] = None
+
+        def add(line: str) -> None:
+            nonlocal size, full
+            size += len(line) + (1 if parts else 0)
+            parts.append(line)
+            if size > RAW_MESSAGES_TEXT_CAP:
+                full = True
 
         for channel_id in self.monitored_channels:
             channel = self.bot.get_channel(channel_id)
@@ -203,69 +216,48 @@ class Summarizer(commands.Cog):
                 # Skip channels where the bot cannot read history
                 continue
 
-            messages: List[discord.Message] = []
+            count = 0
             # Pull messages oldest first for stable formatting
-            async for message in channel.history(
+            async for msg in channel.history(
                 limit=None, after=cutoff_time, oldest_first=True
             ):
-                if not message.author.bot:
-                    messages.append(message)
-
-            if messages:
-                # Use the visible channel name for the header
-                messages_by_channel[channel.name] = messages
-
-        return messages_by_channel, source_guild
-
-    def format_messages_for_summary(
-        self, messages_by_channel: Dict[str, List[discord.Message]]
-    ) -> Tuple[str, Dict[str, str]]:
-        """
-        Format messages into a readable text block for summarization.
-
-        Returns:
-            tuple: (formatted_text, dict mapping channel names to first message URLs)
-
-        Each channel section starts with a markdown link header that jumps to the first message.
-        """
-        formatted: List[str] = []
-        channel_links: Dict[str, str] = {}
-
-        for channel_name, messages in messages_by_channel.items():
-            first_jump_url = messages[0].jump_url if messages else None
-            if messages:
-                channel_links[channel_name] = first_jump_url
-
-            # Channel header with a clickable link to the first message
-            if first_jump_url:
-                formatted.append(f"\n## [#{channel_name}]({first_jump_url})\n")
-            else:
-                formatted.append(f"\n## #{channel_name}\n")
-
-            # Append messages in chronological order with compact formatting
-            for msg in messages:
-                timestamp = msg.created_at.strftime("%H:%M")
-                author = msg.author.display_name
+                if msg.author.bot:
+                    continue
+                if count == 0:
+                    channel_links[channel.name] = msg.jump_url
+                    if not full:
+                        # Channel header with a clickable link to the first message
+                        add(f"\n## [#{channel.name}]({msg.jump_url})\n")
+                count += 1
+                if full:
+                    continue
                 content = msg.clean_content
                 if msg.attachments:
                     content += f" [Attachments: {len(msg.attachments)}]"
-                formatted.append(f"[{timestamp}] {author}: {content}")
+                add(
+                    f"[{msg.created_at.strftime('%H:%M')}] "
+                    f"{msg.author.display_name}: {content}"
+                )
 
-        combined = "\n".join(formatted)
+            if count:
+                channel_counts[channel.name] = count
 
+        combined = "\n".join(parts)
         if len(combined) > RAW_MESSAGES_TEXT_CAP:
             combined = (
                 combined[:RAW_MESSAGES_TEXT_CAP]
                 + "\n\n[Truncated input to fit processing limits]"
             )
-        return combined, channel_links
+        return combined, channel_links, channel_counts, source_guild
 
     # ---------- Model call and length control ----------
 
     async def generate_summary(self, messages_text: str, hours: int) -> str:
         """Generate a summary using the model, then apply a hard character cap."""
+        if self.openai_client is None:
+            return "Error generating summary: OPENAI_API_KEY is not set"
         try:
-            response = self.openai_client.chat.completions.create(
+            response = await self.openai_client.chat.completions.create(
                 model="gpt-5.6-luna",
                 messages=[
                     {
@@ -329,28 +321,26 @@ class Summarizer(commands.Cog):
 
         try:
             # Fetch messages from main-server channels, not from interaction.guild
-            messages_by_channel, source_guild = (
-                await self.fetch_messages_from_main_channels(hours)
-            )
+            (
+                messages_text,
+                channel_links,
+                channel_counts,
+                source_guild,
+            ) = await self.collect_conversation_text(hours)
 
-            if not messages_by_channel:
+            if not channel_counts:
                 await interaction.followup.send(
                     f"No messages found in monitored channels from the last {hours} hour(s)."
                 )
                 return
 
-            total_messages = sum(len(msgs) for msgs in messages_by_channel.values())
-
-            # Prepare formatted input and per-channel jump links
-            messages_text, channel_links = self.format_messages_for_summary(
-                messages_by_channel
-            )
+            total_messages = sum(channel_counts.values())
 
             # Ask model for the summary
             summary = await self.generate_summary(messages_text, hours)
 
             channels_value = (
-                ", ".join([f"#{name}" for name in messages_by_channel.keys()]) or "None"
+                ", ".join([f"#{name}" for name in channel_counts.keys()]) or "None"
             )
             links_text = (
                 " • ".join([f"[#{name}]({url})" for name, url in channel_links.items()])
@@ -370,7 +360,7 @@ class Summarizer(commands.Cog):
                 f"Server Summary, last {hours} hour(s) [Source: {source_server_label}]"
             )
             color = discord.Color(0xFFCD3F)
-            ts = datetime.utcnow()
+            ts = datetime.now(timezone.utc)
 
             primary_link = next(iter(channel_links.values()), None)
 

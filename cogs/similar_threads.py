@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,7 +22,8 @@ from pathlib import Path
 import discord
 import numpy as np
 from discord.ext import commands, tasks
-from openai import AsyncOpenAI
+
+from utils.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -328,8 +328,7 @@ class ForumSimilarityBot(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_client = AsyncOpenAI(api_key=api_key) if api_key else None
+        self.openai_client = get_openai_client()
         if not self.openai_client:
             logger.warning("OPENAI_API_KEY is not set; similarity search is disabled")
 

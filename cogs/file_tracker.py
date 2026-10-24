@@ -4,6 +4,7 @@ from discord import app_commands
 import logging
 from discord.ui import Button, View
 import asyncio
+from cachetools import TTLCache
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from aiohttp import ClientTimeout
@@ -118,7 +119,8 @@ class FileTracker(commands.Cog):
         self.last_count: Optional[int] = None
         self.last_channel_edit: datetime = datetime.utcnow()
         self.minimum_edit_interval: timedelta = timedelta(minutes=5)
-        self.button_cooldowns = {}
+        # user id -> last refresh; entries drop out once the 30s cooldown ends
+        self.button_cooldowns: TTLCache = TTLCache(maxsize=10_000, ttl=30)
         self.data_file = "ente_counts.json"
         self.default_data = {
             "last_count": None,

@@ -1,14 +1,20 @@
 import discord
 from discord.ext import commands
 import logging
-import os
+from collections import OrderedDict
+
+# How many original-message -> warning links to remember for cleanup.
+MAX_TRACKED_WARNINGS = 500
 
 
 class LogFileWarning(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.logger = logging.getLogger(__name__)
-        self.warning_messages = {}
+        # original message id -> (channel id, warning message id). Stores IDs
+        # instead of whole Message objects and drops the oldest past the cap;
+        # it used to keep every warning message in memory forever.
+        self.warning_messages: OrderedDict[int, tuple[int, int]] = OrderedDict()
         self.log_extensions = {
             ".zip",
             ".txt",
@@ -46,7 +52,12 @@ class LogFileWarning(commands.Cog):
                             mention_author=True,
                         )
                         # Store the warning message linked to the original message
-                        self.warning_messages[message.id] = warning_msg
+                        self.warning_messages[message.id] = (
+                            warning_msg.channel.id,
+                            warning_msg.id,
+                        )
+                        while len(self.warning_messages) > MAX_TRACKED_WARNINGS:
+                            self.warning_messages.popitem(last=False)
                         self.logger.info(
                             f"Log file uploaded by {message.author} in {message.channel}"
                         )
@@ -55,22 +66,27 @@ class LogFileWarning(commands.Cog):
                     break
 
     @commands.Cog.listener()
-    async def on_message_delete(self, message):
-        # Only work in the specified server
-        if not message.guild or message.guild.id != self.target_server_id:
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        # Raw event: fires even though the bot no longer caches messages.
+        if payload.guild_id != self.target_server_id:
             return
 
         # Check if the deleted message had a corresponding warning
-        if message.id in self.warning_messages:
-            try:
-                # Delete the associated warning message
-                warning_msg = self.warning_messages[message.id]
-                await warning_msg.delete()
-                # Remove the entry from the tracking dictionary
-                del self.warning_messages[message.id]
-            except discord.HTTPException:
-                # Log if deletion fails (e.g., message already deleted)
-                self.logger.info(f"Could not delete warning for message {message.id}")
+        entry = self.warning_messages.pop(payload.message_id, None)
+        if entry is None:
+            return
+        channel_id, warning_id = entry
+        try:
+            await (
+                self.bot.get_partial_messageable(channel_id)
+                .get_partial_message(warning_id)
+                .delete()
+            )
+        except discord.HTTPException:
+            # Log if deletion fails (e.g., message already deleted)
+            self.logger.info(
+                f"Could not delete warning for message {payload.message_id}"
+            )
 
 
 async def setup(bot):

@@ -1,7 +1,6 @@
 import discord
 from discord import app_commands, Interaction
 from discord.ext import commands
-import aiohttp
 import jwt
 import time
 import os
@@ -58,13 +57,13 @@ class GitHubDiscussions(commands.Cog):
             "Accept": "application/vnd.github+json",
             "User-Agent": "discord-github-bot",
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers) as resp:
-                data = await resp.json()
-                if resp.status != 201:
-                    logger.error("Failed to get installation token:", data)
-                    return None
-                return data["token"]
+        session = self.bot.http_session
+        async with session.post(url, headers=headers) as resp:
+            data = await resp.json()
+            if resp.status != 201:
+                logger.error("Failed to get installation token:", data)
+                return None
+            return data["token"]
 
     async def get_repository_id(self):
         """Get the repository ID needed for GraphQL."""
@@ -96,21 +95,21 @@ class GitHubDiscussions(commands.Cog):
             "User-Agent": "discord-github-bot",
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json={"query": query, "variables": variables}, headers=headers
-            ) as resp:
-                data = await resp.json()
-                if resp.status != 200 or "errors" in data:
-                    logger.error("Failed to get repository info:", data)
-                    return None
+        session = self.bot.http_session
+        async with session.post(
+            url, json={"query": query, "variables": variables}, headers=headers
+        ) as resp:
+            data = await resp.json()
+            if resp.status != 200 or "errors" in data:
+                logger.error("Failed to get repository info:", data)
+                return None
 
-                repo_data = data["data"]["repository"]
-                logger.info("Available discussion categories:")
-                for category in repo_data["discussionCategories"]["nodes"]:
-                    logger.info(f"  {category['name']}: {category['id']}")
+            repo_data = data["data"]["repository"]
+            logger.info("Available discussion categories:")
+            for category in repo_data["discussionCategories"]["nodes"]:
+                logger.info(f"  {category['name']}: {category['id']}")
 
-                return repo_data["id"]
+            return repo_data["id"]
 
     async def get_discussion_categories(self):
         """Get available discussion categories."""
@@ -144,20 +143,18 @@ class GitHubDiscussions(commands.Cog):
             "User-Agent": "discord-github-bot",
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json={"query": query, "variables": variables}, headers=headers
-            ) as resp:
-                data = await resp.json()
-                if resp.status == 200 and "data" in data:
-                    categories = data["data"]["repository"]["discussionCategories"][
-                        "nodes"
-                    ]
-                    self._discussion_categories = categories
-                    return categories
-                else:
-                    logger.error("Failed to get categories:", data)
-                    return []
+        session = self.bot.http_session
+        async with session.post(
+            url, json={"query": query, "variables": variables}, headers=headers
+        ) as resp:
+            data = await resp.json()
+            if resp.status == 200 and "data" in data:
+                categories = data["data"]["repository"]["discussionCategories"]["nodes"]
+                self._discussion_categories = categories
+                return categories
+            else:
+                logger.error("Failed to get categories:", data)
+                return []
 
     async def create_github_discussion(self, title, body, category_id=None):
         """Create a new GitHub discussion using GraphQL."""
@@ -212,20 +209,20 @@ class GitHubDiscussions(commands.Cog):
             "User-Agent": "discord-github-bot",
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json={"query": mutation, "variables": variables}, headers=headers
-            ) as resp:
-                data = await resp.json()
-                if (
-                    resp.status == 200
-                    and "data" in data
-                    and data["data"]["createDiscussion"]
-                ):
-                    return data["data"]["createDiscussion"]["discussion"]["url"]
-                else:
-                    logger.error("GitHub GraphQL error:", data)
-                    return None
+        session = self.bot.http_session
+        async with session.post(
+            url, json={"query": mutation, "variables": variables}, headers=headers
+        ) as resp:
+            data = await resp.json()
+            if (
+                resp.status == 200
+                and "data" in data
+                and data["data"]["createDiscussion"]
+            ):
+                return data["data"]["createDiscussion"]["discussion"]["url"]
+            else:
+                logger.error("GitHub GraphQL error:", data)
+                return None
 
     @app_commands.command(
         name="discussion", description="Post this thread to GitHub Discussions"

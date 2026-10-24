@@ -27,6 +27,16 @@ MAX_RESTART_ATTEMPTS = int(os.getenv("MAX_RESTART_ATTEMPTS", "10"))
 RESTART_DELAY_BASE = int(os.getenv("RESTART_DELAY_BASE", "30"))  # Base delay in seconds
 MAX_RESTART_DELAY = int(os.getenv("MAX_RESTART_DELAY", "300"))  # Max delay (5 minutes)
 
+# Memory tuning
+# Downloading every member of the server at startup ("chunking") is the single
+# largest RAM cost of the bot. No cog needs the full member list, so it is off
+# by default; members are still cached as they join or change. Set
+# CHUNK_MEMBERS=true to restore the old behaviour.
+CHUNK_MEMBERS = os.getenv("CHUNK_MEMBERS", "false").lower() in ("1", "true", "yes")
+# discord.py keeps the last N messages in memory (default 1000). Every cog now
+# uses raw events, so the cache is off unless you set a size here.
+MESSAGE_CACHE_SIZE = int(os.getenv("MESSAGE_CACHE_SIZE", "0"))
+
 
 def setup_logging() -> logging.Logger:
     if not os.path.exists(LOG_DIR):
@@ -63,7 +73,21 @@ class EnteBot(commands.Bot):
         intents.message_content = True
         intents.members = True
         intents.reactions = True
-        super().__init__(command_prefix="d!", intents=intents)
+        # Events no cog listens to: dropping them means less gateway traffic
+        # and no voice-state / invite / scheduled-event caches.
+        intents.typing = False
+        intents.voice_states = False
+        intents.invites = False
+        intents.webhooks = False
+        intents.guild_scheduled_events = False
+        intents.auto_moderation = False
+        super().__init__(
+            command_prefix="d!",
+            intents=intents,
+            max_messages=MESSAGE_CACHE_SIZE or None,
+            chunk_guilds_at_startup=CHUNK_MEMBERS,
+            member_cache_flags=discord.MemberCacheFlags.from_intents(intents),
+        )
         self.logger = logging.getLogger(__name__)
         self.config = self.load_config(config_path or DEFAULT_CONFIG_PATH)
         self.http_session: aiohttp.ClientSession | None = None
@@ -225,8 +249,12 @@ async def run_bot_with_restart() -> None:
 
             # Clean up any remaining tasks
             try:
-                # Cancel all pending tasks
-                pending = asyncio.all_tasks()
+                # Cancel all pending tasks. Skip this coroutine's own task:
+                # cancelling it would abort the restart loop itself and leave
+                # the old bot's tasks (and memory) alive.
+                pending = [
+                    t for t in asyncio.all_tasks() if t is not asyncio.current_task()
+                ]
                 for task in pending:
                     if not task.done():
                         task.cancel()

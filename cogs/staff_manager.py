@@ -27,7 +27,9 @@ class MessageNoteLogger(commands.Cog):
         if not guild:
             return
 
-        member = guild.get_member(payload.user_id)
+        # payload.member comes with the event, so this works without the
+        # full member list cached.
+        member = payload.member or guild.get_member(payload.user_id)
         if not member or not self.is_staff(member):
             return
 

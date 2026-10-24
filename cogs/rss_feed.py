@@ -311,17 +311,23 @@ class LinkButton(discord.ui.View):
         )
 
 
-async def fetch_feed_content(url: str, headers: dict = None):
-    """Fetch RSS feed content"""
+async def fetch_feed_content(
+    session: aiohttp.ClientSession, url: str, headers: dict = None
+):
+    """Fetch raw RSS feed bytes over the bot's shared HTTP session"""
     try:
         timeout = aiohttp.ClientTimeout(total=FEED_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    return await response.text()
-                else:
-                    logger.error(f"HTTP {response.status} for {url}")
-                    return None
+        async with session.get(
+            url,
+            # Same User-Agent feedparser used when it fetched feeds itself.
+            headers=headers or {"User-Agent": feedparser.USER_AGENT},
+            timeout=timeout,
+        ) as response:
+            if response.status == 200:
+                return await response.read()
+            else:
+                logger.error(f"HTTP {response.status} for {url}")
+                return None
     except asyncio.TimeoutError:
         logger.error(f"Timeout fetching {url}")
         return None
@@ -330,18 +336,14 @@ async def fetch_feed_content(url: str, headers: dict = None):
         return None
 
 
-async def parse_feed(url: str, headers: dict = None):
+async def parse_feed(session: aiohttp.ClientSession, url: str, headers: dict = None):
     """Parse RSS feed"""
     try:
-        if headers:
-            content = await fetch_feed_content(url, headers)
-            if content:
-                return feedparser.parse(content)
+        content = await fetch_feed_content(session, url, headers)
+        if not content:
             return None
-        else:
-            return await asyncio.wait_for(
-                asyncio.to_thread(feedparser.parse, url), timeout=FEED_TIMEOUT
-            )
+        # Parsing is CPU-bound; keep it off the event loop.
+        return await asyncio.to_thread(feedparser.parse, content)
     except asyncio.TimeoutError:
         logger.error(f"Timeout parsing {url}")
         return None
@@ -410,7 +412,9 @@ class RSSFeedCog(commands.Cog):
                 logger.debug(f"Checking {feed_key}")
 
                 # Parse feed
-                feed_data = await parse_feed(url, feed_cfg.get("headers"))
+                feed_data = await parse_feed(
+                    self.bot.http_session, url, feed_cfg.get("headers")
+                )
                 if not feed_data or not feed_data.entries:
                     if feed_data is None:
                         logger.error(f"Failed to parse {feed_key} feed")
