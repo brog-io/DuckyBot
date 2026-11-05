@@ -68,7 +68,7 @@ FEEDS = {
         "type": "social",
     },
     "reddit": {
-        "url": "https://www.reddit.com/r/enteio/new/.rss",
+        "url": "https://api.poggers.win/api/reddit/r/enteio/new/.rss",
         "button_text": "View Post",
         "role_mention": "<@&1400571795848958052>",
         "channel_id": 1423279602318446622,
