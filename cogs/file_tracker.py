@@ -37,7 +37,7 @@ def compact(n: float) -> str:
     sign = "-" if n < 0 else ""
     n = abs(n)
     for div, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
-        if n >= div:
+        if round(n / div, 2) >= 1:
             return f"{sign}{n / div:.2f}".rstrip("0").rstrip(".") + suffix
     return f"{sign}{n:,.0f}"
 
@@ -94,7 +94,7 @@ def rate_between(
 
 def fmt_change(change: Optional[Tuple[int, float, float]]) -> str:
     if change is None:
-        return "-# collecting data…"
+        return "*collecting data…*"
     diff, pct, _ = change
     arrow = "▲" if diff > 0 else "▼" if diff < 0 else "▬"
     return f"{arrow} **{diff:+,}**\n`{pct:+.2f}%`"
@@ -390,7 +390,7 @@ class FileTracker(commands.Cog):
             per_minute = rate / 1440
             speed = f"**{compact(rate)}**/day\n`~{per_minute:,.1f}/min`"
         else:
-            speed = "-# collecting data…"
+            speed = "*collecting data…*"
         embed.add_field(name="⚡ Speed", value=speed, inline=True)
 
         this_week = rate_between(history, now_ts - 7 * DAY, now_ts, 12 * HOUR)
@@ -399,9 +399,9 @@ class FileTracker(commands.Cog):
             delta = (this_week - last_week) / last_week * 100
             icon = "📈" if delta >= 0 else "📉"
             word = "faster" if delta >= 0 else "slower"
-            trend = f"{icon} **{abs(delta):.1f}%** {word}\n-# than the week before"
+            trend = f"{icon} **{abs(delta):.1f}%** {word}\n*than the week before*"
         else:
-            trend = "-# collecting data…"
+            trend = "*collecting data…*"
         embed.add_field(name="📊 Trend", value=trend, inline=True)
 
         achieved = [m for m in self.data["achieved_milestones"] if isinstance(m, dict)]
@@ -410,7 +410,8 @@ class FileTracker(commands.Cog):
             party = "🎉 " if now_ts - latest["timestamp"] < 7 * DAY else ""
             last_ms = f"{party}**{compact(latest['milestone'])}**\n<t:{latest['timestamp']}:R>"
         else:
-            last_ms = "-# none recorded yet"
+            passed = max((m for m in self.MILESTONES if m <= current), default=None)
+            last_ms = f"**{compact(passed)}**" if passed else "*none yet*"
         embed.add_field(name="🏆 Last Milestone", value=last_ms, inline=True)
 
         # Row 3: next milestone with progress bar + ETA
