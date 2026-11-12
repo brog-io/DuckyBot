@@ -4,7 +4,6 @@ import io
 import json
 import logging
 import os
-import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,10 +29,9 @@ SAMPLE_INTERVAL = HOUR  # how often a point is stored in the history
 HISTORY_DAYS = 45  # enough for 30-day stats and week-over-week trends
 DATA_FILENAME = "ente_counts.json"
 CARD_FILENAME = "ente-files.png"
-# #ente-stats, where the n8n "Ente File Count Tracker" posts milestone announcements.
-# Override with "milestone_channel_id" in config.json.
+# #ente-stats, where Ducky announces milestones. Override with "milestone_channel_id" in config.json.
 DEFAULT_MILESTONE_CHANNEL_ID = 1531001301557575741
-MILESTONE_TITLE_RE = re.compile(r"Ente just passed (?:(\d+) BILLION|([\d,]+)) files", re.IGNORECASE)
+ANNOUNCE_MAX_GAP = 6 * 3_600  # don't announce if the previous check is older (bot was offline)
 
 
 # Milestone schedule, kept identical to the n8n "Ente File Count Tracker" workflow
@@ -120,6 +118,16 @@ def rate_between(
     return (b["count"] - a["count"]) / (b["timestamp"] - a["timestamp"]) * DAY
 
 
+def fmt_duration(seconds: float) -> str:
+    days, rest = divmod(int(seconds), 86_400)
+    hours = rest // 3_600
+    if days >= 2:
+        return f"{days} days"
+    if days == 1:
+        return f"1 day {hours}h"
+    return f"{max(hours, 1)}h"
+
+
 def fmt_change(change: Optional[Tuple[int, float, float]]) -> str:
     if change is None:
         return "*collecting data…*"
@@ -175,6 +183,7 @@ class FileTracker(commands.Cog):
         "last_update": None,
         "historical_counts": [],
         "achieved_milestones": [],
+        "milestone_watch": None,  # last count the milestone checker saw
     }
 
     def __init__(self, bot):
@@ -187,7 +196,6 @@ class FileTracker(commands.Cog):
         self._cached_count: Optional[int] = None
         self._cached_at = 0.0
         self._card_cache: Optional[Tuple[tuple, bytes]] = None
-        self._carded_milestones: set = set()
         self.milestone_channel_id = int(
             bot.config.get("milestone_channel_id", DEFAULT_MILESTONE_CHANNEL_ID)
         )
@@ -253,19 +261,6 @@ class FileTracker(commands.Cog):
         history = self.data["historical_counts"]
         if history and now_ts - history[-1]["timestamp"] < SAMPLE_INTERVAL:
             return
-
-        previous = history[-1]["count"] if history else None
-        # Only date a milestone when the previous sample is recent; after a long
-        # gap (bot offline, old sparse data) we can't tell when it was crossed.
-        if previous is not None and now_ts - history[-1]["timestamp"] <= 3 * SAMPLE_INTERVAL:
-            achieved = {m["milestone"] for m in self.data["achieved_milestones"]
-                        if isinstance(m, dict)}
-            for m in self.MILESTONES:
-                if previous < m <= count and m not in achieved:
-                    self.data["achieved_milestones"].append(
-                        {"milestone": m, "timestamp": now_ts}
-                    )
-                    logger.info(f"Ente passed {m:,} files")
 
         history.append({"timestamp": now_ts, "count": count})
         cutoff = now_ts - HISTORY_DAYS * DAY
@@ -353,7 +348,9 @@ class FileTracker(commands.Cog):
             current_count = await self.get_count()
             if current_count is None:
                 return
-            self.record_sample(current_count, int(time.time()))
+            now = datetime.now(timezone.utc)
+            await self.check_milestones(current_count, now)
+            self.record_sample(current_count, int(now.timestamp()))
 
             if current_count == self.last_count:
                 return
@@ -426,12 +423,8 @@ class FileTracker(commands.Cog):
         history = self.data["historical_counts"]
         now_ts = int(now.timestamp())
 
-        if has_card:  # the card already shows the big number
-            description = f"🔐 **{current:,}** files, end-to-end encrypted with Ente"
-        else:
-            description = f"# 🔐 {current:,}\n-# files end-to-end encrypted with Ente"
         embed = discord.Embed(
-            description=description,
+            description=f"# 🔐 {current:,}\n-# files end-to-end encrypted with Ente",
             color=ENTE_YELLOW,
             timestamp=now,
         )
@@ -560,47 +553,103 @@ class FileTracker(commands.Cog):
             except discord.HTTPException:
                 pass
 
-    # ------------------------------------------------------- milestone cards
+    # ------------------------------------------------------------ milestones
 
-    @staticmethod
-    def parse_milestone(title: str) -> Optional[int]:
-        match = MILESTONE_TITLE_RE.search(title or "")
-        if not match:
-            return None
-        if match.group(1):
-            return int(match.group(1)) * 1_000_000_000
-        return int(match.group(2).replace(",", ""))
+    def milestone_reached_at(self, milestone: int) -> Optional[int]:
+        for entry in self.data["achieved_milestones"]:
+            if isinstance(entry, dict) and entry.get("milestone") == milestone:
+                return entry["timestamp"]
+        history = self.data["historical_counts"]
+        for before, after in zip(history, history[1:]):  # crossing inside our history
+            if before["count"] < milestone <= after["count"]:
+                return after["timestamp"]
+        return None
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        """Reply to n8n's milestone announcement in #ente-stats with a celebration card."""
-        if (
-            message.channel.id != self.milestone_channel_id
-            or not message.author.bot
-            or not message.embeds
-        ):
+    async def check_milestones(self, count: int, now: datetime):
+        """Called on every background poll; announces newly crossed milestones."""
+        now_ts = int(now.timestamp())
+        watch = self.data.get("milestone_watch")
+        self.data["milestone_watch"] = {"count": count, "timestamp": now_ts}
+        if not watch:  # first run: just start watching
+            self.save_data()
             return
-        embed = message.embeds[0]
-        milestone = self.parse_milestone(embed.title)
-        if milestone is None or milestone in self._carded_milestones:
+        crossed = [m for m in self.MILESTONES if watch["count"] < m <= count]
+        if not crossed:
             return
-        self._carded_milestones.add(milestone)
+        achieved = {e.get("milestone") for e in self.data["achieved_milestones"] if isinstance(e, dict)}
+        new = [m for m in crossed if m not in achieved]
+        for m in new:
+            self.data["achieved_milestones"].append({"milestone": m, "timestamp": now_ts})
+            logger.info(f"Ente passed {m:,} files")
+        self.save_data()
+        if not new:
+            return
+        if now_ts - watch["timestamp"] > ANNOUNCE_MAX_GAP:
+            logger.info(f"Not announcing {max(new):,}: last check was too long ago")
+            return
+        await self.announce_milestone(max(new), count, now)
 
-        since = None
-        for field in embed.fields:
-            if field.name and "Since " in field.name:
-                since = f"{field.value} after {field.name.split('Since ', 1)[1]}"
+    async def build_milestone_message(
+        self, milestone: int, count: int, now: datetime
+    ) -> Tuple[str, discord.Embed, Optional[discord.File]]:
+        now_ts = int(now.timestamp())
+        prev_ms = max((m for m in self.MILESTONES if m < milestone), default=0)
+        prev_ts = self.milestone_reached_at(prev_ms) if prev_ms else None
+        since = fmt_duration(now_ts - prev_ts) if prev_ts and prev_ts < now_ts else None
+        billion = milestone % 1_000_000_000 == 0
+        name = f"{milestone // 1_000_000_000} BILLION" if billion else f"{milestone:,}"
+
+        embed = discord.Embed(
+            title=f"🚀🎉 Ente just passed {name} files! 🎉🚀" if billion
+            else f"🎉 Ente just passed {name} files!",
+            description=f"🔐 **{count:,}** files, all end-to-end encrypted.",
+            color=ENTE_YELLOW,
+            timestamp=now,
+        )
+        if since:
+            embed.add_field(name=f"⏱️ Since {compact(prev_ms)}", value=since, inline=True)
+        rate = self.daily_rate(count, now_ts)
+        if rate:
+            embed.add_field(name="⚡ Speed", value=f"**{compact(rate)}**/day", inline=True)
+        next_ms = next((m for m in self.MILESTONES if m > count), None)
+        if next_ms:
+            value = f"{next_ms:,}"
+            if rate and rate > 0:
+                eta = int(now_ts + (next_ms - count) / rate * DAY)
+                value = f"<t:{eta}:R>\n<t:{eta}:D>"
+            embed.add_field(name=f"🎯 Next: {compact(next_ms)}", value=value, inline=True)
+        embed.set_footer(text="Ducky · data from api.ente.com")
+
+        file = None
         try:
-            png = await asyncio.to_thread(render_milestone_card, milestone, message.created_at, since)
-            await message.reply(
-                file=discord.File(io.BytesIO(png), filename=f"ente-{milestone}-files.png"),
-                mention_author=False,
-            )
+            card_since = f"{since} after {compact(prev_ms)}" if since else None
+            png = await asyncio.to_thread(render_milestone_card, milestone, now, card_since)
+            filename = f"ente-{milestone}-files.png"
+            file = discord.File(io.BytesIO(png), filename=filename)
+            embed.set_image(url=f"attachment://{filename}")
         except Exception as e:
-            logger.error(f"Failed to post milestone card for {milestone:,}: {e}", exc_info=True)
+            logger.error(f"Failed to render milestone card: {e}", exc_info=True)
+
+        content = f"🚀 **Ente just passed {name} files!**" if billion \
+            else f"🎉 Ente passed **{compact(milestone)}** files"
+        return content, embed, file
+
+    async def announce_milestone(self, milestone: int, count: int, now: datetime):
+        channel = self.bot.get_channel(self.milestone_channel_id)
+        if channel is None:
+            logger.warning(f"Milestone channel {self.milestone_channel_id} not found")
+            return
+        content, embed, file = await self.build_milestone_message(milestone, count, now)
+        try:
+            if file:
+                await channel.send(content=content, embed=embed, file=file)
+            else:
+                await channel.send(content=content, embed=embed)
+        except discord.HTTPException as e:
+            logger.error(f"Failed to announce milestone {milestone:,}: {e}", exc_info=True)
 
     @app_commands.command(
-        name="milestonecard", description="Preview the celebration card for an Ente milestone"
+        name="milestonecard", description="Preview the announcement for an Ente milestone"
     )
     @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(milestone="Milestone to preview, e.g. 1000000000 (default: the next one)")
@@ -613,20 +662,14 @@ class FileTracker(commands.Cog):
         if milestone is None:
             base = self._cached_count or self.data.get("last_count") or 0
             milestone = next((m for m in self.MILESTONES if m > base), self.MILESTONES[-1])
-        try:
-            png = await asyncio.to_thread(
-                render_milestone_card, milestone, datetime.now(timezone.utc), None
-            )
-        except Exception as e:
-            logger.error(f"Failed to render milestone preview: {e}", exc_info=True)
-            await interaction.followup.send("Couldn't render the card.", ephemeral=True)
-            return
-        await interaction.followup.send(
-            f"Preview for **{milestone:,}** files",
-            file=discord.File(io.BytesIO(png), filename="milestone-preview.png"),
-            ephemeral=True,
+        count = max(self._cached_count or self.data.get("last_count") or milestone, milestone)
+        content, embed, file = await self.build_milestone_message(
+            milestone, count, datetime.now(timezone.utc)
         )
-
+        kwargs = {"embed": embed, "ephemeral": True}
+        if file:
+            kwargs["file"] = file
+        await interaction.followup.send(f"**Preview** · {content}", **kwargs)
 
 async def setup(bot):
     await bot.add_cog(FileTracker(bot))
