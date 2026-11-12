@@ -7,10 +7,10 @@ lines and circles. Rendering is CPU work, so call these via asyncio.to_thread.
 import io
 import math
 import random
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
@@ -69,8 +69,8 @@ def compact(n: float) -> str:
     return f"{sign}{n:,.0f}"
 
 
-def new_canvas() -> Image.Image:
-    size = (s(W), s(H))
+def new_canvas(w: int = W, h: int = H) -> Image.Image:
+    size = (s(w), s(h))
     mask = Image.linear_gradient("L").resize(size)
     img = Image.composite(Image.new("RGB", size, BG_BOTTOM), Image.new("RGB", size, BG_TOP), mask)
     return img.convert("RGBA")
@@ -99,8 +99,8 @@ def draw_tracked(d, x, y, txt, f, fill, tracking, align="left"):
         px += f.getlength(ch) + s(tracking)
 
 
-def finish(img: Image.Image) -> bytes:
-    out = img.resize((W, H), Image.LANCZOS).convert("RGB")
+def finish(img: Image.Image, w: int = W, h: int = H) -> bytes:
+    out = img.resize((w, h), Image.LANCZOS).convert("RGB")
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -320,3 +320,113 @@ def render_milestone_card(
 
     draw_tracked(d, 600, 618, "END-TO-END ENCRYPTED  ·  DUCKY", font("SemiBold", 14), DIM, 2.5, align="center")
     return finish(img)
+
+
+# --------------------------------------------------------------------------- #
+# Public: activity heatmap
+# --------------------------------------------------------------------------- #
+
+HEAT_EMPTY = (36, 36, 40)
+
+
+def blend(a: tuple, b: tuple, t: float) -> tuple:
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+HEAT_LEVELS = [HEAT_EMPTY] + [blend(HEAT_EMPTY, YELLOW, t) for t in (0.3, 0.52, 0.76, 1.0)]
+
+
+def heatmap_start(today: date) -> date:
+    """Monday 52 weeks before this week's Monday -> 53 week columns."""
+    return today - timedelta(days=today.weekday()) - timedelta(weeks=52)
+
+
+def avatar_circle(img: Image.Image, data: bytes, cx: float, cy: float, r: float):
+    try:
+        av = Image.open(io.BytesIO(data)).convert("RGBA").resize((s(2 * r), s(2 * r)), Image.LANCZOS)
+    except Exception:
+        return
+    mask = Image.new("L", av.size, 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, av.width - 1, av.height - 1], fill=255)
+    img.paste(av, (s(cx - r), s(cy - r)), mask)
+    ImageDraw.Draw(img).ellipse([s(cx - r - 6), s(cy - r - 6), s(cx + r + 6), s(cy + r + 6)],
+                                outline=YELLOW, width=s(4))
+
+
+def render_heatmap_card(
+    counts: Dict[date, int],
+    today: date,
+    label: str,
+    headline: str,
+    subline: str,
+    chips: Sequence[Sequence[Tuple[str, tuple]]] = (),
+    avatar: Optional[bytes] = None,
+) -> bytes:
+    w, h = 1200, 560
+    img = new_canvas(w, h)
+    glow(img, 120, 40, 420, 220, 30, 120)
+    d = ImageDraw.Draw(img)
+
+    d.ellipse([s(60), s(51), s(72), s(63)], fill=YELLOW)
+    draw_tracked(d, 84, 47, label.upper(), font("SemiBold", 17), MUTED, 2.2)
+    draw_text(d, 56, 80, headline, fit_font(headline, "ExtraBold", 84, 820), YELLOW)
+    draw_text(d, 60, 180, subline, font("Medium", 26), SOFT)
+    x = 60
+    for parts in chips:
+        x += chip(d, x, 230, parts) + 12
+    if avatar:
+        avatar_circle(img, avatar, 1062, 150, 74)
+        d = ImageDraw.Draw(img)
+
+    # Grid
+    start = heatmap_start(today)
+    cols = 53
+    gx0, gx1, gy0 = 100, 1140, 336
+    pitch = (gx1 - gx0) / cols
+    cell = pitch * 0.8
+    nonzero = sorted(v for v in counts.values() if v > 0)
+
+    def q(p):
+        return nonzero[min(int(len(nonzero) * p), len(nonzero) - 1)] if nonzero else 0
+
+    q1, q2, q3 = q(0.25), q(0.5), q(0.75)
+
+    def level(v):
+        if v <= 0:
+            return 0
+        return 1 if v <= q1 else 2 if v <= q2 else 3 if v <= q3 else 4
+
+    busiest = max(counts.items(), key=lambda kv: kv[1])[0] if nonzero else None
+    last_label_col = -10
+    for col in range(cols):
+        week_start = start + timedelta(weeks=col)
+        for row in range(7):
+            day = week_start + timedelta(days=row)
+            if day > today:
+                continue
+            x0, y0 = gx0 + col * pitch, gy0 + row * pitch
+            box = [s(x0), s(y0), s(x0 + cell), s(y0 + cell)]
+            d.rounded_rectangle(box, radius=s(3.5), fill=HEAT_LEVELS[level(counts.get(day, 0))])
+            if day == busiest:
+                d.rounded_rectangle([b - s(2.5) if i < 2 else b + s(2.5) for i, b in enumerate(box)],
+                                    radius=s(5), outline=WHITE, width=s(2))
+            if day.day == 1 or (col == 0 and row == 0):
+                if col - last_label_col >= 3:
+                    draw_text(d, gx0 + col * pitch, gy0 - 28, f"{day:%b}", font("Medium", 15), DIM)
+                    last_label_col = col
+    for row, name in ((0, "Mon"), (2, "Wed"), (4, "Fri")):
+        draw_text(d, 60, gy0 + row * pitch + cell / 2, name, font("Medium", 15), DIM, anchor="lm")
+
+    # Legend + footer
+    ly = gy0 + 7 * pitch + 26
+    lx = gx1 - 5 * pitch - 46
+    draw_text(d, lx - 10, ly + cell / 2, "Less", font("Medium", 15), DIM, anchor="rm")
+    for i, color in enumerate(HEAT_LEVELS):
+        d.rounded_rectangle([s(lx + i * pitch), s(ly), s(lx + i * pitch + cell), s(ly + cell)],
+                            radius=s(3.5), fill=color)
+    draw_text(d, lx + 5 * pitch + 6, ly + cell / 2, "More", font("Medium", 15), DIM, anchor="lm")
+    note = "Days in UTC"
+    if busiest:
+        note += f"  ·  outlined: busiest day, {busiest.day} {busiest:%b %Y}"
+    draw_text(d, 60, ly + cell / 2, note, font("Medium", 15), DIM, anchor="lm")
+    return finish(img, w, h)

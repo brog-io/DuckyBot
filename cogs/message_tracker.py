@@ -1,12 +1,20 @@
+import asyncio
+import io
+import time
+from collections import Counter
+from typing import Dict, Optional
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import aiomysql
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
+
+from utils.cards import GREEN, MUTED, WHITE, heatmap_start, render_heatmap_card
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +35,7 @@ class MessageTracker(commands.Cog):
         self.cache_path = "leaderboard_cache.json"
         self.pinned_message_ids = {}
         self.db_pool = None
+        self._activity_cache: Dict[Optional[int], tuple] = {}  # user_id/None -> (time, day, counts)
         bot.loop.create_task(self._init_everything())
 
     async def _get_pool(self):
@@ -307,6 +316,121 @@ class MessageTracker(commands.Cog):
             pass
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------- /activity
+
+    async def _daily_counts(self, since: date, user_id: Optional[int]) -> Dict[date, int]:
+        """Messages per UTC day since `since`, for one user or the whole server."""
+        cached = self._activity_cache.get(user_id)
+        today = datetime.now(timezone.utc).date()
+        if cached and cached[1] == today and time.monotonic() - cached[0] < 600:
+            return cached[2]
+        query = "SELECT DATE(timestamp) AS day, COUNT(*) FROM messages WHERE timestamp >= %s"
+        params: tuple = (since.strftime("%Y-%m-%d 00:00:00"),)
+        if user_id is not None:
+            query += " AND user_id = %s"
+            params += (user_id,)
+        query += " GROUP BY day"
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(query, params)
+                rows = await cursor.fetchall()
+        counts = {}
+        for day, n in rows:
+            if isinstance(day, datetime):
+                day = day.date()
+            elif isinstance(day, str):
+                day = date.fromisoformat(day)
+            counts[day] = int(n)
+        self._activity_cache[user_id] = (time.monotonic(), today, counts)
+        if len(self._activity_cache) > 200:  # keep the per-user cache small
+            self._activity_cache = {None: self._activity_cache.get(None)} if None in self._activity_cache else {}
+            self._activity_cache[user_id] = (time.monotonic(), today, counts)
+        return counts
+
+    @staticmethod
+    def _streaks(counts: Dict[date, int], start: date, today: date):
+        longest = run = 0
+        day = start
+        while day <= today:
+            run = run + 1 if counts.get(day, 0) > 0 else 0
+            longest = max(longest, run)
+            day += timedelta(days=1)
+        current = 0
+        day = today if counts.get(today, 0) > 0 else today - timedelta(days=1)
+        while counts.get(day, 0) > 0:  # a streak still counts if today has no message yet
+            current += 1
+            day -= timedelta(days=1)
+        return longest, current
+
+    @app_commands.command(
+        name="activity", description="Show a year of activity as a heatmap"
+    )
+    @app_commands.describe(
+        user="Show one member's activity instead of the whole server",
+        share="Post it in the channel instead of only showing it to you",
+    )
+    async def activity(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.User] = None,
+        share: bool = False,
+    ):
+        await interaction.response.defer(thinking=True, ephemeral=not share)
+        today = datetime.now(timezone.utc).date()
+        start = heatmap_start(today)
+        try:
+            counts = await self._daily_counts(start, user.id if user else None)
+        except Exception as e:
+            logger.error(f"Activity query failed: {e}", exc_info=True)
+            await interaction.followup.send("Couldn't load activity right now.", ephemeral=True)
+            return
+
+        total = sum(counts.values())
+        if user:
+            label = f"{user.display_name} · activity"
+            longest, current = self._streaks(counts, start, today)
+            chips = [
+                [(f"{sum(1 for v in counts.values() if v):,}", WHITE), (" active days", MUTED)],
+                [("Longest streak ", MUTED), (f"{longest} day{'s' if longest != 1 else ''}", WHITE)],
+            ]
+            if current >= 2:
+                chips.append([("Current streak ", MUTED), (f"{current} days", GREEN)])
+            image_source = user.display_avatar
+        else:
+            label = "Ente community · activity"
+            weekdays = Counter()
+            for day, n in counts.items():
+                weekdays[day.weekday()] += n
+            days = (today - start).days + 1
+            chips = [[(f"{round(total / days):,}", WHITE), (" / day on average", MUTED)]]
+            if weekdays:
+                busiest = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                           "Saturday", "Sunday"][weekdays.most_common(1)[0][0]]
+                chips.append([("Busiest weekday ", MUTED), (busiest, WHITE)])
+            image_source = interaction.guild.icon if interaction.guild else None
+
+        avatar = None
+        if image_source is not None:
+            try:
+                avatar = await image_source.replace(size=256, format="png").read()
+            except Exception:
+                avatar = None
+
+        headline = f"{total:,} message{'s' if total != 1 else ''}"
+        try:
+            png = await asyncio.to_thread(
+                render_heatmap_card, counts, today, label, headline,
+                "in the last 12 months", chips, avatar,
+            )
+        except Exception as e:
+            logger.error(f"Failed to render activity card: {e}", exc_info=True)
+            await interaction.followup.send("Couldn't draw the heatmap right now.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            file=discord.File(io.BytesIO(png), filename="activity.png"), ephemeral=not share
+        )
 
     @tasks.loop(minutes=10)
     async def update_leaderboards(self):
