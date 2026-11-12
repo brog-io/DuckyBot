@@ -1,8 +1,10 @@
 import asyncio
 import copy
+import io
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +17,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import Button, View
 
+from utils.cards import render_milestone_card, render_stats_card
+
 logger = logging.getLogger(__name__)
 
 HOUR = 3_600
@@ -25,6 +29,30 @@ COUNT_CACHE_SECONDS = 60  # reuse a fresh API result instead of hammering the AP
 SAMPLE_INTERVAL = HOUR  # how often a point is stored in the history
 HISTORY_DAYS = 45  # enough for 30-day stats and week-over-week trends
 DATA_FILENAME = "ente_counts.json"
+CARD_FILENAME = "ente-files.png"
+# #ente-stats, where the n8n "Ente File Count Tracker" posts milestone announcements.
+# Override with "milestone_channel_id" in config.json.
+DEFAULT_MILESTONE_CHANNEL_ID = 1531001301557575741
+MILESTONE_TITLE_RE = re.compile(r"Ente just passed (?:(\d+) BILLION|([\d,]+)) files", re.IGNORECASE)
+
+
+# Milestone schedule, kept identical to the n8n "Ente File Count Tracker" workflow
+# (TIERS in its Compute Growth node): (tier end, step) pairs. Change both together.
+MILESTONE_TIERS = [
+    (100_000_000, 10_000_000),  # every 10M up to 100M
+    (1_000_000_000, 50_000_000),  # every 50M up to 1B
+    (2_000_000_000, 100_000_000),  # every 100M up to 2B
+    (5_000_000_000, 250_000_000),  # every 250M up to 5B
+    (50_000_000_000, 500_000_000),  # every 500M after that
+]
+
+
+def build_milestones() -> List[int]:
+    milestones, tier_start = [], 0
+    for tier_end, step in MILESTONE_TIERS:
+        milestones.extend(range(tier_start + step, tier_end + 1, step))
+        tier_start = tier_end
+    return milestones
 
 
 # --------------------------------------------------------------------------- #
@@ -141,21 +169,7 @@ class FileTracker(commands.Cog):
     API_TIMEOUT = ClientTimeout(total=10)
     MAX_RETRIES = 3
     RETRY_DELAY = 1
-    MILESTONES = [
-        10_000, 25_000, 50_000, 75_000, 100_000, 150_000, 200_000, 250_000,
-        300_000, 400_000, 500_000, 600_000, 700_000, 750_000, 800_000, 900_000,
-        1_000_000, 1_250_000, 1_500_000, 1_750_000, 2_000_000, 2_250_000,
-        2_500_000, 2_750_000, 3_000_000, 3_500_000, 4_000_000, 4_500_000,
-        5_000_000, 6_000_000, 7_000_000, 7_500_000, 8_000_000, 9_000_000,
-        10_000_000, 12_500_000, 15_000_000, 17_500_000, 20_000_000, 22_500_000,
-        25_000_000, 27_500_000, 30_000_000, 35_000_000, 40_000_000, 45_000_000,
-        50_000_000, 60_000_000, 70_000_000, 75_000_000, 80_000_000, 90_000_000,
-        100_000_000, 150_000_000, 200_000_000, 250_000_000, 300_000_000,
-        350_000_000, 400_000_000, 500_000_000, 600_000_000, 700_000_000,
-        750_000_000, 800_000_000, 900_000_000, 1_000_000_000, 1_500_000_000,
-        2_000_000_000, 2_500_000_000, 3_000_000_000, 4_000_000_000,
-        5_000_000_000,
-    ]
+    MILESTONES = build_milestones()
     DEFAULT_DATA = {
         "last_count": None,
         "last_update": None,
@@ -172,6 +186,11 @@ class FileTracker(commands.Cog):
         self._fetch_lock = asyncio.Lock()
         self._cached_count: Optional[int] = None
         self._cached_at = 0.0
+        self._card_cache: Optional[Tuple[tuple, bytes]] = None
+        self._carded_milestones: set = set()
+        self.milestone_channel_id = int(
+            bot.config.get("milestone_channel_id", DEFAULT_MILESTONE_CHANNEL_ID)
+        )
         self.data_file = self._resolve_data_path()
         self.load_data()
         self.monitor_files.start()
@@ -363,12 +382,56 @@ class FileTracker(commands.Cog):
                 return change[0] / change[2] * DAY
         return None
 
-    def build_embed(self, current: int, now: datetime) -> discord.Embed:
+    def weekly_trend(self, now_ts: int) -> Optional[float]:
+        """% change of this week's growth speed vs. the week before."""
+        history = self.data["historical_counts"]
+        this_week = rate_between(history, now_ts - 7 * DAY, now_ts, 12 * HOUR)
+        last_week = rate_between(history, now_ts - 14 * DAY, now_ts - 7 * DAY, 12 * HOUR)
+        if this_week is None or not last_week or last_week <= 0:
+            return None
+        return (this_week - last_week) / last_week * 100
+
+    def card_kwargs(self, current: int, now: datetime) -> dict:
+        """Snapshot everything the stats card needs (taken on the event loop)."""
+        history = self.data["historical_counts"]
+        now_ts = int(now.timestamp())
+        points = [(e["timestamp"], e["count"]) for e in history if e["timestamp"] >= now_ts - 30 * DAY]
+        points.append((now_ts, current))
+        week = window_change(history, now_ts, current, 7 * DAY)
+        return {
+            "count": current,
+            "points": points,
+            "updated_at": now,
+            "per_day": self.daily_rate(current, now_ts),
+            "week_diff": week[0] if week else None,
+            "trend_pct": self.weekly_trend(now_ts),
+            "next_milestone": next((m for m in self.MILESTONES if m > current), None),
+            "prev_milestone": max((m for m in self.MILESTONES if m <= current), default=0),
+        }
+
+    async def get_card(self, current: int, now: datetime) -> Optional[bytes]:
+        history = self.data["historical_counts"]
+        key = (current, history[-1]["timestamp"] if history else None)
+        if self._card_cache and self._card_cache[0] == key:
+            return self._card_cache[1]
+        try:
+            png = await asyncio.to_thread(render_stats_card, **self.card_kwargs(current, now))
+        except Exception as e:
+            logger.error(f"Failed to render stats card: {e}", exc_info=True)
+            return None
+        self._card_cache = (key, png)
+        return png
+
+    def build_embed(self, current: int, now: datetime, has_card: bool = False) -> discord.Embed:
         history = self.data["historical_counts"]
         now_ts = int(now.timestamp())
 
+        if has_card:  # the card already shows the big number
+            description = f"🔐 **{current:,}** files, end-to-end encrypted with Ente"
+        else:
+            description = f"# 🔐 {current:,}\n-# files end-to-end encrypted with Ente"
         embed = discord.Embed(
-            description=f"# 🔐 {current:,}\n-# files end-to-end encrypted with Ente",
+            description=description,
             color=ENTE_YELLOW,
             timestamp=now,
         )
@@ -393,10 +456,8 @@ class FileTracker(commands.Cog):
             speed = "*collecting data…*"
         embed.add_field(name="⚡ Speed", value=speed, inline=True)
 
-        this_week = rate_between(history, now_ts - 7 * DAY, now_ts, 12 * HOUR)
-        last_week = rate_between(history, now_ts - 14 * DAY, now_ts - 7 * DAY, 12 * HOUR)
-        if this_week is not None and last_week and last_week > 0:
-            delta = (this_week - last_week) / last_week * 100
+        delta = self.weekly_trend(now_ts)
+        if delta is not None:
             icon = "📈" if delta >= 0 else "📉"
             word = "faster" if delta >= 0 else "slower"
             trend = f"{icon} **{abs(delta):.1f}%** {word}\n*than the week before*"
@@ -478,8 +539,14 @@ class FileTracker(commands.Cog):
 
             now = datetime.now(timezone.utc)
             self.record_sample(current, int(now.timestamp()))
+            card = await self.get_card(current, now)
+            embed = self.build_embed(current, now, has_card=card is not None)
+            files = []
+            if card:
+                files = [discord.File(io.BytesIO(card), filename=CARD_FILENAME)]
+                embed.set_image(url=f"attachment://{CARD_FILENAME}")
             await interaction.edit_original_response(
-                content=None, embed=self.build_embed(current, now), view=make_view()
+                content=None, embed=embed, view=make_view(), attachments=files
             )
         except discord.NotFound:
             logger.warning("Interaction expired before response could be completed")
@@ -492,6 +559,73 @@ class FileTracker(commands.Cog):
                 )
             except discord.HTTPException:
                 pass
+
+    # ------------------------------------------------------- milestone cards
+
+    @staticmethod
+    def parse_milestone(title: str) -> Optional[int]:
+        match = MILESTONE_TITLE_RE.search(title or "")
+        if not match:
+            return None
+        if match.group(1):
+            return int(match.group(1)) * 1_000_000_000
+        return int(match.group(2).replace(",", ""))
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Reply to n8n's milestone announcement in #ente-stats with a celebration card."""
+        if (
+            message.channel.id != self.milestone_channel_id
+            or not message.author.bot
+            or not message.embeds
+        ):
+            return
+        embed = message.embeds[0]
+        milestone = self.parse_milestone(embed.title)
+        if milestone is None or milestone in self._carded_milestones:
+            return
+        self._carded_milestones.add(milestone)
+
+        since = None
+        for field in embed.fields:
+            if field.name and "Since " in field.name:
+                since = f"{field.value} after {field.name.split('Since ', 1)[1]}"
+        try:
+            png = await asyncio.to_thread(render_milestone_card, milestone, message.created_at, since)
+            await message.reply(
+                file=discord.File(io.BytesIO(png), filename=f"ente-{milestone}-files.png"),
+                mention_author=False,
+            )
+        except Exception as e:
+            logger.error(f"Failed to post milestone card for {milestone:,}: {e}", exc_info=True)
+
+    @app_commands.command(
+        name="milestonecard", description="Preview the celebration card for an Ente milestone"
+    )
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.describe(milestone="Milestone to preview, e.g. 1000000000 (default: the next one)")
+    async def milestonecard(
+        self,
+        interaction: discord.Interaction,
+        milestone: Optional[app_commands.Range[int, 1, 1_000_000_000_000]] = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if milestone is None:
+            base = self._cached_count or self.data.get("last_count") or 0
+            milestone = next((m for m in self.MILESTONES if m > base), self.MILESTONES[-1])
+        try:
+            png = await asyncio.to_thread(
+                render_milestone_card, milestone, datetime.now(timezone.utc), None
+            )
+        except Exception as e:
+            logger.error(f"Failed to render milestone preview: {e}", exc_info=True)
+            await interaction.followup.send("Couldn't render the card.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"Preview for **{milestone:,}** files",
+            file=discord.File(io.BytesIO(png), filename="milestone-preview.png"),
+            ephemeral=True,
+        )
 
 
 async def setup(bot):
