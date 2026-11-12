@@ -9,7 +9,7 @@ import math
 import random
 from calendar import month_abbr, month_name
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -43,6 +43,31 @@ WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", 
 # --------------------------------------------------------------------------- #
 # Data
 # --------------------------------------------------------------------------- #
+
+
+def days_covered(year: int) -> int:
+    """Days of `year` so far (the whole year once it's over)."""
+    today = datetime.now(timezone.utc).date()
+    end = min(today, date(year, 12, 31))
+    return max((end - date(year, 1, 1)).days + 1, 1)
+
+
+def ranking_line(rank: Optional[int], members: int) -> str:
+    """Never rounds up to "100%": 4th of 1,369 beats 99.7% -> "99%"."""
+    if rank == 1:
+        return "The most active duck in the pond"
+    beaten = (members - rank) / members * 100 if rank and members else 0
+    if beaten >= 1:
+        return f"More messages than {min(math.floor(beaten), 99)}% of members"
+    return "Every message counts"
+
+
+def top_percent(rank: Optional[int], members: int) -> str:
+    if not rank or not members:
+        return "—"
+    if rank == 1:
+        return "#1"
+    return f"{max(math.ceil(rank / members * 100), 1)}%"
 
 
 @dataclass
@@ -513,7 +538,7 @@ def slide_messages(w: UserWrapped, page: int, total: int) -> bytes:
 
     y = 700
     if w.beat_pct is not None:
-        line = f"More than {w.beat_pct:.0f}% of the community" if w.beat_pct >= 1 else "Every message counts"
+        line = ranking_line(w.rank, w.members)
         f = font("Bold", 38)
         tw = text_width(line, f)
         d.rounded_rectangle([s(80), s(y), s(80 + tw + 56), s(y + 74)], radius=s(37), fill=INK)
@@ -521,7 +546,7 @@ def slide_messages(w: UserWrapped, page: int, total: int) -> bytes:
         draw_text(d, 82, y + 120, f"#{w.rank:,} of {w.members:,} members who spoke up this year",
                   font("Medium", 32), blend(INK, (255, 200, 60), 0.25))
         y += 190
-    hours_per = 8760 / w.total if w.total else 0
+    hours_per = days_covered(w.year) * 24 / w.total if w.total else 0
     if w.total:
         every = f"{hours_per:.1f} hours" if hours_per < 48 else f"{hours_per / 24:.0f} days"
         metres = w.total * 0.15
@@ -605,9 +630,10 @@ def slide_streak(w: UserWrapped, page: int, total: int) -> bytes:
     streak_days = [a + timedelta(days=i) for i in range(longest)] if a else []
     year_heatmap(img, w.daily, w.year, 80, 1000, 760, highlight=streak_days)
     d = ImageDraw.Draw(img)
-    pct = w.active_days / (366 if w.year % 4 == 0 else 365) * 100
+    pct = w.active_days / days_covered(w.year) * 100
     draw_text(d, 80, 1000, f"You showed up on {w.active_days} days", font("ExtraBold", 50), WHITE)
-    draw_text(d, 80, 1068, f"That's {pct:.0f}% of the year. The outlined squares are your streak.",
+    so_far = " so far" if days_covered(w.year) < (366 if w.year % 4 == 0 else 365) else ""
+    draw_text(d, 80, 1068, f"That's {pct:.0f}% of the year{so_far}. The outlined squares are your streak.",
               font("Medium", 30), (170, 170, 178))
     story_frame(img, page, total, w.year, WHITE)
     return finish_story(img)
@@ -689,7 +715,7 @@ def user_summary(w: UserWrapped) -> bytes:
     months = w.months
     tiles = [
         ("MESSAGES", f"{w.total:,}"),
-        ("TOP", f"{max(100 - (w.beat_pct or 0), 1):.0f}%" if w.beat_pct is not None else "—"),
+        ("TOP", top_percent(w.rank, w.members)),
         ("ACTIVE DAYS", f"{w.active_days}"),
         ("LONGEST STREAK", f"{longest} day{'s' if longest != 1 else ''}"),
         ("BEST MONTH", month_name[max(range(12), key=lambda i: months[i]) + 1] if w.total else "—"),
@@ -745,11 +771,10 @@ def slide_server_messages(sw: ServerWrapped, page: int, total: int) -> bytes:
     f = font("Bold", 38)
     d.rounded_rectangle([s(80), s(700), s(80 + text_width(line, f) + 56), s(774)], radius=s(37), fill=INK)
     draw_text(d, 108, 737, line, f, YELLOW, anchor="lm")
-    days = 366 if sw.year % 4 == 0 else 365
-    secs = days * 86400 / sw.total if sw.total else 0
+    secs = days_covered(sw.year) * 86400 / sw.total if sw.total else 0
     every = f"{secs:.0f} seconds" if secs < 120 else f"{secs / 60:.0f} minutes"
     busiest = max(sw.daily.items(), key=lambda kv: kv[1]) if sw.daily else None
-    text = f"That's one message every {every}, all year long."
+    text = f"That's one message every {every}, on average."
     if busiest:
         text += f" The busiest day was {busiest[0].day} {month_name[busiest[0].month]}, with {busiest[1]:,} messages."
     draw_lines(d, 82, 860, wrap(text, font("Medium", 38), 560), font("Medium", 38), INK, 52)
