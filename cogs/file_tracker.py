@@ -30,7 +30,7 @@ HISTORY_DAYS = 45  # enough for 30-day stats and week-over-week trends
 DATA_FILENAME = "ente_counts.json"
 CARD_FILENAME = "ente-files.png"
 # #ente-stats, where Ducky announces milestones. Override with "milestone_channel_id" in config.json.
-DEFAULT_MILESTONE_CHANNEL_ID = 1531001301557575741
+DEFAULT_MILESTONE_CHANNEL_ID = 953968250553765908  # in the Ente server (948937918347608085)
 ANNOUNCE_MAX_GAP = 6 * 3_600  # don't announce if the previous check is older (bot was offline)
 
 

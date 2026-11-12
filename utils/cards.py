@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+DUCKY_FILE = Path(__file__).resolve().parent.parent / "assets" / "ducky.png"
 W, H = 1200, 675  # output size (16:9)
 SS = 2  # supersampling factor
 
@@ -47,6 +48,18 @@ def s(v: float) -> int:
 @lru_cache(maxsize=64)
 def font(weight: str, size: float) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(FONT_DIR / f"Inter-{weight}.ttf"), s(size))
+
+
+@lru_cache(maxsize=8)
+def ducky_image(height_px: int) -> Image.Image:
+    """The Ducky mascot artwork, scaled to a pixel height (cached)."""
+    im = Image.open(DUCKY_FILE).convert("RGBA")
+    return im.resize((round(height_px * im.width / im.height), height_px), Image.LANCZOS)
+
+
+def paste_ducky(img: Image.Image, cx: float, bottom: float, height: float):
+    im = ducky_image(s(height))
+    img.alpha_composite(im, (s(cx) - im.width // 2, s(bottom) - im.height))
 
 
 def text_width(txt: str, f: ImageFont.FreeTypeFont, tracking: float = 0) -> float:
@@ -267,7 +280,7 @@ def confetti(img: Image.Image, seed: int, pieces: int = 150):
     while placed < pieces:
         x, y = rng.uniform(10, W - 10), rng.uniform(10, H - 10)
         if (170 < x < 1030 and 120 < y < 560) or (80 < x < 1120 and 210 < y < 380) \
-                or (380 < x < 820 and 596 < y < 650):  # keep the text clean
+                or (380 < x < 820 and 596 < y < 650) or (x > 940 and y > 440):  # keep text + Ducky clean
             continue
         placed += 1
         color = rng.choice(CONFETTI)
@@ -319,6 +332,10 @@ def render_milestone_card(
     draw_text(d, 600, 492, meta, font("Medium", 24), MUTED, anchor="mm")
 
     draw_tracked(d, 600, 618, "END-TO-END ENCRYPTED  ·  DUCKY", font("SemiBold", 14), DIM, 2.5, align="center")
+    try:
+        paste_ducky(img, 1080, 690, 230)  # Ducky in his party hat, peeking in from the corner
+    except OSError:
+        pass
     return finish(img)
 
 
